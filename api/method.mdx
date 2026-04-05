@@ -1,0 +1,153 @@
+---
+title: 'Method'
+description: 'Parses and prints an HTTP request method.'
+---
+
+## Overview
+
+`Method` is a `ParserPrinter` that matches a specific HTTP verb. Use it inside a `Route` builder to restrict a route to a particular method.
+
+When parsing, `Method` inspects `URLRequestData.method` and throws `RoutingError` if the method doesn't match. When printing, it writes the method name back into `URLRequestData`.
+
+## Declaration
+
+```swift
+public struct Method: ParserPrinter
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `ParserPrinter` | Always |
+
+## Static properties
+
+### `Method.get`
+
+```swift
+public static let get = OneOf {
+    Self("HEAD")
+    Self("GET")   // preferred for printing
+}
+```
+
+A parser that accepts both `GET` and `HEAD` requests. When printing, it always emits `"GET"`.
+
+<Note>
+If you use a `Route` parser without specifying a method, `GET` is the default. You do not need to include `Method.get` explicitly in a `Route` unless you want to be explicit.
+</Note>
+
+### `Method.post`
+
+```swift
+public static let post = Self("POST")
+```
+
+A parser of `POST` requests.
+
+### `Method.put`
+
+```swift
+public static let put = Self("PUT")
+```
+
+A parser of `PUT` requests.
+
+### `Method.patch`
+
+```swift
+public static let patch = Self("PATCH")
+```
+
+A parser of `PATCH` requests.
+
+### `Method.delete`
+
+```swift
+public static let delete = Self("DELETE")
+```
+
+A parser of `DELETE` requests.
+
+## Initializers
+
+### `init(_:)`
+
+```swift
+public init(_ name: String)
+```
+
+Creates a method parser for any HTTP verb. The name is uppercased automatically.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `name` | The HTTP method name (e.g. `"CONNECT"`, `"OPTIONS"`, `"TRACE"`). Automatically uppercased. |
+
+## Usage examples
+
+### Restricting a route to POST
+
+```swift
+Route(.case(SiteRoute.login)) {
+    Method.post
+    Path { "login" }
+    Body(.json(LoginRequest.self))
+}
+```
+
+### Common CRUD methods
+
+```swift
+let router = OneOf {
+    Route(.case(AppRoute.getUser)) {
+        Method.get
+        Path { "users"; Int.parser() }
+    }
+    Route(.case(AppRoute.createUser)) {
+        Method.post
+        Path { "users" }
+        Body(.json(CreateUserRequest.self))
+    }
+    Route(.case(AppRoute.updateUser)) {
+        Method.put
+        Path { "users"; Int.parser() }
+        Body(.json(UpdateUserRequest.self))
+    }
+    Route(.case(AppRoute.patchUser)) {
+        Method.patch
+        Path { "users"; Int.parser() }
+    }
+    Route(.case(AppRoute.deleteUser)) {
+        Method.delete
+        Path { "users"; Int.parser() }
+    }
+}
+```
+
+### Custom HTTP method
+
+```swift
+// Match a WebDAV PROPFIND request
+Route(.case(AppRoute.propfind)) {
+    Method("PROPFIND")
+    Path { "files" }
+}
+```
+
+### Parsing and printing
+
+```swift
+// Parse
+try Method.post.parse(URLRequestData(method: "POST"))  // succeeds
+
+// Print
+let data = try Method.post.print()
+// data == URLRequestData(method: "POST")
+```
+
+<Tip>
+Because `Method.get` matches both `GET` and `HEAD`, HEAD requests to any `GET` route are handled automatically — consistent with HTTP semantics.
+</Tip>

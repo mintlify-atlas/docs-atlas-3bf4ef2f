@@ -1,0 +1,181 @@
+---
+title: "Installation"
+description: "Add Swift URL Routing to your Swift package or Xcode project using Swift Package Manager."
+---
+
+Swift URL Routing is distributed as a Swift package. You can add it using Swift Package Manager from the command line or directly inside Xcode.
+
+## Requirements
+
+| Platform | Minimum version |
+|---|---|
+| iOS | 13.0+ |
+| macOS | 10.15+ |
+| tvOS | 13.0+ |
+| watchOS | 6.0+ |
+| Swift tools | 5.7+ |
+
+<Note>
+  `URLRouting` re-exports `Parsing` automatically. You do not need to add `swift-parsing` as a
+  separate dependency — importing `URLRouting` gives you access to all parsing primitives.
+</Note>
+
+## Installation
+
+<Tabs>
+  <Tab title="Swift Package Manager">
+
+Add the package to your `Package.swift` dependencies and then declare the `URLRouting` product in any target that needs it.
+
+<Steps>
+
+<Step title="Add the package dependency">
+
+Open `Package.swift` and add `swift-url-routing` to the `dependencies` array:
+
+```swift
+let package = Package(
+  dependencies: [
+    .package(url: "https://github.com/pointfreeco/swift-url-routing", from: "0.1.0"),
+  ],
+  targets: [
+    .target(
+      name: "<target-name>",
+      dependencies: [
+        .product(name: "URLRouting", package: "swift-url-routing")
+      ]
+    )
+  ]
+)
+```
+
+Replace `<target-name>` with the name of your target.
+
+</Step>
+
+<Step title="Fetch the package">
+
+Run the following command in your package directory to resolve and fetch the dependency:
+
+```bash
+swift package resolve
+```
+
+</Step>
+
+<Step title="Import the module">
+
+Add the import statement to any Swift file where you want to use URL routing:
+
+```swift
+import URLRouting
+```
+
+</Step>
+
+</Steps>
+
+  </Tab>
+  <Tab title="Xcode">
+
+If your project uses an `.xcodeproj` or `.xcworkspace` rather than a `Package.swift`, add the package through Xcode's built-in package manager UI.
+
+<Steps>
+
+<Step title="Open the Add Package Dependencies dialog">
+
+In Xcode, go to **File** > **Add Package Dependencies…**
+
+</Step>
+
+<Step title="Enter the package URL">
+
+Paste the following URL into the search field in the top-right corner:
+
+```
+https://github.com/pointfreeco/swift-url-routing
+```
+
+Press **Return** to search.
+
+</Step>
+
+<Step title="Choose a version rule">
+
+Select a version rule. **Up to Next Major Version** starting from `0.1.0` is recommended:
+
+- **Up to Next Major Version** — automatically takes patch and minor updates.
+- **Exact Version** — pins to a specific release.
+- **Branch** — tracks a branch (useful for pre-release work; not recommended for production).
+
+Click **Add Package**.
+
+</Step>
+
+<Step title="Add the URLRouting product to your target">
+
+In the product selection sheet, check **URLRouting** and choose the target(s) in your project that should link it. Click **Add Package**.
+
+</Step>
+
+<Step title="Import the module">
+
+Add the import statement to any Swift file where you want to use URL routing:
+
+```swift
+import URLRouting
+```
+
+</Step>
+
+</Steps>
+
+  </Tab>
+</Tabs>
+
+## Verify the installation
+
+Create a minimal router to confirm everything is set up correctly:
+
+```swift
+import URLRouting
+
+enum AppRoute {
+  case home
+}
+
+let appRouter = OneOf {
+  Route(AppRoute.home)
+}
+
+let route = try appRouter.match(path: "/")
+// AppRoute.home
+```
+
+If this compiles and runs without errors, the package is installed correctly.
+
+## What's included
+
+The `URLRouting` product provides:
+
+- `Route` — declares a URL endpoint and maps it to a typed value.
+- `Path` — parses path components.
+- `Query` / `Field` — parses query parameters.
+- `Body` / `FormData` — parses request body data.
+- `Headers` — parses HTTP headers.
+- `Cookies` — parses cookies.
+- `Method` — matches HTTP methods.
+- `Scheme` / `Host` / `Fragment` — matches other URL components.
+- `URLRoutingClient` — an async API client built on top of your router.
+- All of `swift-parsing` — `Digits`, `OneOf`, `Parse`, `Many`, `Optionally`, and more.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first router and make your first `match` and `path(for:)` calls.
+  </Card>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn about the problems Swift URL Routing solves and when to use it.
+  </Card>
+</CardGroup>

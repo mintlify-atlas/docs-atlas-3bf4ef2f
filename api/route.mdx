@@ -1,0 +1,396 @@
+---
+title: "Route"
+description: "A parser that accumulates parsers for a URL endpoint and maps the combined output to a specific value or enum case."
+---
+
+## Overview
+
+`Route` is a domain-specific wrapper around the `Parse` type from swift-parsing, tailored for URL request routing. It runs a series of parsers against `URLRequestData` — consuming path components, query parameters, headers, and other URL parts — then maps the accumulated output to a specific value (typically an enum case).
+
+Each `Route` represents a single URL endpoint in your application. You compose multiple `Route` parsers together inside a `OneOf` to build a complete router.
+
+```swift
+let appRouter = OneOf {
+  // GET /books
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&count=:count
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+After parsing all declared components, `Route` enforces that no unconsumed path segments remain, making matches exact rather than prefix-based.
+
+## Declaration
+
+```swift
+public struct Route<Parsers: Parser>: Parser where Parsers.Input == URLRequestData
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `Parsers: ParserPrinter` |
+
+When `Parsers` is also a `ParserPrinter`, `Route` gains the ability to print a route value back into `URLRequestData`, enabling URL generation.
+
+## Initializers
+
+### `init(_:with:)` — transform closure
+
+```swift
+public init<Upstream, NewOutput>(
+  _ transform: @escaping (Upstream.Output) -> NewOutput,
+  @ParserBuilder<URLRequestData> with build: () -> Upstream
+)
+where
+  Upstream.Input == URLRequestData,
+  Parsers == Parsing.Parsers.Map<Upstream, NewOutput>
+```
+
+Use this initializer when you want full control over how the parsed output is mapped to your route type via a custom closure.
+
+**Parameters**
+
+- `transform` — A closure that receives the combined output of the nested parsers and converts it to `NewOutput`.
+- `build` — A `@ParserBuilder` closure that composes the URL component parsers for this route.
+
+**Example**
+
+```swift
+Route({ id in AppRoute.book(id: id) }) {
+  Path { "books"; Digits() }
+}
+```
+
+---
+
+### `init(_:with:)` — constant output with parsers
+
+```swift
+public init<Upstream, NewOutput>(
+  _ output: NewOutput,
+  @ParserBuilder<URLRequestData> with build: () -> Upstream
+)
+where
+  Upstream.Input == URLRequestData,
+  Parsers == Parsing.Parsers.MapConstant<Upstream, NewOutput>
+```
+
+Use this initializer when the route always maps to the same constant value regardless of what the nested parsers consume. The parsers still run and must match, but their output is discarded.
+
+**Parameters**
+
+- `output` — The constant value to produce when the parsers succeed.
+- `build` — A `@ParserBuilder` closure that composes the URL component parsers for this route.
+
+**Example**
+
+```swift
+// Matches GET /books, always produces AppRoute.books
+Route(AppRoute.books) {
+  Path { "books" }
+}
+```
+
+---
+
+### `init(_:)` — constant output, no parsers
+
+```swift
+public init<NewOutput>(
+  _ output: NewOutput
+)
+where
+  Parsers == Parsing.Parsers.MapConstant<Always<URLRequestData, Void>, NewOutput>
+```
+
+Use this initializer for a catch-all or root route that matches any remaining input. No parsers run — the route immediately succeeds with the given constant output.
+
+<Warning>
+Because this route consumes no input, it will match any URL. Place it last inside a `OneOf` so that more specific routes are tried first.
+</Warning>
+
+**Parameters**
+
+- `output` — The constant value to produce unconditionally.
+
+**Example**
+
+```swift
+let router = OneOf {
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+  // Fallback: matches anything
+  Route(AppRoute.notFound)
+}
+```
+
+---
+
+### `init(_:with:)` — Conversion and parsers
+
+```swift
+public init<C: Conversion, P: Parser>(
+  _ conversion: C,
+  @ParserBuilder<URLRequestData> with parsers: () -> P
+)
+where
+  P.Input == URLRequestData,
+  Parsers == Parsing.Parsers.MapConversion<P, C>
+```
+
+Use this initializer when you want a `Conversion` value (from swift-parsing) to transform the parser output. This is the most common form when using `.case()` to map enum cases.
+
+**Parameters**
+
+- `conversion` — A `Conversion` that transforms the parsers' output to your route type. The canonical example is `.case(SomeEnum.someCase)` from swift-parsing.
+- `parsers` — A `@ParserBuilder` closure that composes the URL component parsers for this route.
+
+**Example**
+
+```swift
+Route(.case(AppRoute.book(id:))) {
+  Path { "books"; Digits() }
+}
+```
+
+<Tip>
+`.case(AppRoute.book(id:))` is a `Conversion` provided by swift-parsing that applies and inverts an enum case initializer. It gives `Route` everything it needs to both parse and print.
+</Tip>
+
+---
+
+### `init(_:)` — Conversion, no parsers
+
+```swift
+public init<C: Conversion>(
+  _ conversion: C
+) where Parsers == Parsing.Parsers.MapConversion<Always<URLRequestData, Void>, C>
+```
+
+Use this initializer when a `Conversion` should be applied but no URL components need to be consumed. Like `init(_:)` with a constant output, this matches any remaining input.
+
+**Parameters**
+
+- `conversion` — A `Conversion` that transforms `Void` to your route type.
+
+**Example**
+
+```swift
+Route(.case(AppRoute.home))
+```
+
+---
+
+## The `.case()` conversion
+
+The `.case()` conversion from swift-parsing is the idiomatic way to route to enum cases. It creates a bidirectional conversion between a tuple (the parsed values) and an enum case:
+
+```swift
+enum AppRoute {
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int)
+}
+
+let router = OneOf {
+  // .case() handles both parsing (tuple → enum) and printing (enum → tuple)
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+Because `.case()` is a full `Conversion`, routes built with it automatically support both parsing and printing.
+
+---
+
+## Parsing
+
+`Route` conforms to `Parser` and exposes the following methods.
+
+### `parse(_:)`
+
+```swift
+public func parse(_ input: inout URLRequestData) throws -> Parsers.Output
+```
+
+Runs all nested parsers against the input, then verifies that no path segments remain unconsumed. Throws if any parser fails or if extra path is left over.
+
+**Example**
+
+```swift
+var data = URLRequestData(string: "/books/42")!
+let route = try Route(.case(AppRoute.book(id:))) {
+  Path { "books"; Digits() }
+}.parse(&data)
+// route == AppRoute.book(id: 42)
+```
+
+### `match(url:)`
+
+```swift
+public func match(url: URL) throws -> Output
+```
+
+Converts a `URL` to `URLRequestData` and parses it. Throws `RoutingError` if the URL cannot be converted or if parsing fails.
+
+```swift
+let route = try appRouter.match(url: URL(string: "/books/42")!)
+// route == AppRoute.book(id: 42)
+```
+
+### `match(path:)`
+
+```swift
+public func match(path: String) throws -> Output
+```
+
+Parses a URL path string directly. Useful in tests or server middleware.
+
+```swift
+let route = try appRouter.match(path: "/books/search?query=Blob&count=5")
+// route == AppRoute.searchBooks(query: "Blob", count: 5)
+```
+
+### `match(request:)`
+
+```swift
+public func match(request: URLRequest) throws -> Output
+```
+
+Parses a `URLRequest`. Use this in server contexts where you receive a full request object.
+
+```swift
+var req = URLRequest(url: URL(string: "/books/42")!)
+req.httpMethod = "GET"
+let route = try appRouter.match(request: req)
+```
+
+---
+
+## Printing (ParserPrinter conformance)
+
+When the underlying `Parsers` type also conforms to `ParserPrinter`, `Route` inherits printing capabilities — turning route values back into URLs.
+
+### `print(_:into:)`
+
+```swift
+public func print(_ output: Parsers.Output, into input: inout URLRequestData) rethrows
+```
+
+Prints a route value into `URLRequestData` by delegating to the nested parsers in reverse.
+
+### `url(for:)`
+
+```swift
+public func url(for route: Output) -> URL
+```
+
+Returns the `URL` for a given route value. Falls back to `URL(string: "#route-not-found")!` if the route cannot be printed, and triggers a breakpoint in debug builds.
+
+```swift
+let url = appRouter.url(for: .book(id: 42))
+// URL(string: "/books/42")
+```
+
+### `path(for:)`
+
+```swift
+public func path(for route: Output) -> String
+```
+
+Returns the path and query string for a given route value.
+
+```swift
+appRouter.path(for: .searchBooks(query: "Blob Bio", count: 10))
+// "/books/search?query=Blob%20Bio"
+// (count omitted — equals the default value of 10)
+```
+
+### `request(for:)`
+
+```swift
+public func request(for route: Output) throws -> URLRequest
+```
+
+Returns a `URLRequest` for a given route value. Throws `RoutingError` if the route cannot be printed into a valid request.
+
+```swift
+let req = try appRouter.request(for: .book(id: 42))
+```
+
+---
+
+## Complete example
+
+```swift
+import URLRouting
+
+enum AppRoute: Equatable {
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int)
+  case privacyPolicy(section: String)
+}
+
+let appRouter = OneOf {
+  // GET /books
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&count=:count
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+
+  // GET /legal/privacy#:section
+  Route(.case(AppRoute.privacyPolicy(section:))) {
+    Path { "legal"; "privacy" }
+    Fragment()
+  }
+}
+
+// Parsing
+let route = try appRouter.match(path: "/books/42")
+// AppRoute.book(id: 42)
+
+// Printing
+let path = appRouter.path(for: .searchBooks(query: "Blob Bio", count: 5))
+// "/books/search?query=Blob%20Bio&count=5"
+```

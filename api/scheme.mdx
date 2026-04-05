@@ -1,0 +1,112 @@
+---
+title: 'Scheme'
+description: 'Parses and prints a URL scheme such as http or https.'
+---
+
+## Overview
+
+`Scheme` is a `ParserPrinter` that matches the scheme component of a URL (the part before `://`). Use it inside a `Route` builder to restrict routing to a specific scheme.
+
+When parsing, `Scheme` reads `URLRequestData.scheme` and throws `RoutingError` if it doesn't match. When printing, it writes the scheme name back into `URLRequestData`.
+
+## Declaration
+
+```swift
+public struct Scheme: ParserPrinter
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `ParserPrinter` | Always |
+
+## Static properties
+
+### `Scheme.http`
+
+```swift
+public static let http = Self("http")
+```
+
+A parser that matches the `http` scheme.
+
+### `Scheme.https`
+
+```swift
+public static let https = Self("https")
+```
+
+A parser that matches the `https` scheme.
+
+## Initializers
+
+### `init(_:)`
+
+```swift
+public init(_ name: String)
+```
+
+Creates a scheme parser for any URL scheme.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `name` | The URL scheme to match (e.g. `"ftp"`, `"custom"`, `"myapp"`). |
+
+## Usage examples
+
+### Requiring HTTPS
+
+```swift
+Route(.case(AppRoute.securePage)) {
+    Scheme.https
+    Path { "secure"; "page" }
+}
+```
+
+### Matching HTTP and HTTPS
+
+```swift
+let router = OneOf {
+    Route(.case(AppRoute.page)) {
+        Scheme.https
+        Path { "page" }
+    }
+    Route(.case(AppRoute.page)) {
+        Scheme.http
+        Path { "page" }
+    }
+}
+```
+
+### Custom deep-link scheme
+
+```swift
+Route(.case(AppRoute.openItem)) {
+    Scheme("myapp")
+    Host("open")
+    Path { "item"; Int.parser() }
+}
+```
+
+### Parsing and printing
+
+```swift
+// Parse
+try Scheme.http.parse(URLRequestData(scheme: "http"))   // succeeds
+try Scheme.https.parse(URLRequestData(scheme: "http"))  // throws RoutingError
+
+// Print
+let data = try Scheme.http.print()
+// data == URLRequestData(scheme: "http")
+```
+
+<Warning>
+Do not use `Scheme` to control which scheme is **printed** when generating URLs. For that purpose, use `BaseURLPrinter` via the `baseURL(_:)` or `baseRequestData(_:)` methods on your router. Setting a scheme via `Scheme` during printing works but bypasses the intent of those helpers.
+</Warning>
+
+<Tip>
+`Scheme` is most useful in universal-link or deep-link routers where you need to distinguish between `https://` and `myapp://` URLs in the same `OneOf` block.
+</Tip>

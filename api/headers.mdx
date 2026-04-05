@@ -1,0 +1,125 @@
+---
+title: 'Headers'
+description: 'Parses and prints request headers using named field parsers.'
+---
+
+## Overview
+
+`Headers` extracts values from a request's HTTP headers. It works identically to [`Query`](/api/query) but reads from `URLRequestData.headers` instead of the query string.
+
+Header names are normalised to lowercase when parsed from a `URLRequest`, so `Field` name matching is effectively case-insensitive in practice.
+
+Because `Headers` conforms to `ParserPrinter` when its inner field parsers do, it can reconstruct the header dictionary for a given value.
+
+## Declaration
+
+```swift
+public struct Headers<FieldParsers: Parser>: Parser
+    where FieldParsers.Input == URLRequestData.Fields
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `FieldParsers: ParserPrinter` |
+
+## Initializers
+
+### `init(build:)`
+
+```swift
+public init(@ParserBuilder<URLRequestData.Fields> build: () -> FieldParsers)
+```
+
+Builds a headers parser from a `@ParserBuilder<URLRequestData.Fields>` closure that lists `Field` parsers.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `build` | A `@ParserBuilder` closure that lists the `Field` parsers to apply to the request headers. |
+
+## Usage examples
+
+### Parsing a custom header
+
+```swift
+let p = Headers {
+    Field("X-Haha", .string)
+}
+
+var req = URLRequest(url: URL(string: "/")!)
+req.addValue("Hello", forHTTPHeaderField: "X-Haha")
+var request = URLRequestData(request: req)!
+
+let value = try p.parse(&request)
+// value == "Hello"
+// remaining request.headers["x-haha"] == ["Blob"] (if a second value was added)
+```
+
+<Note>
+`URLRequestData` lowercases header names when it is initialised from a `URLRequest`. Use lowercase names in your `Field` parsers — for example `"x-api-key"` rather than `"X-Api-Key"`.
+</Note>
+
+### Parsing an Authorization bearer token
+
+```swift
+struct AuthToken {
+    let value: String
+}
+
+let p = Headers {
+    Field("authorization") {
+        "Bearer "
+        Rest().map(.string)
+    }
+}
+```
+
+### Requiring a Content-Type header
+
+```swift
+let p = Headers {
+    Field("content-type") {
+        "application/json"
+    }
+}
+```
+
+### Multiple headers
+
+```swift
+let p = Headers {
+    Field("x-api-key", .string)
+    Field("accept-language", .string, default: "en")
+}
+```
+
+### Bidirectional printing
+
+```swift
+let p = Headers {
+    Field("x-haha", .string)
+}
+
+let data = try p.print("Hello")
+// data.headers == ["x-haha": ["Hello"]]
+```
+
+### Inside a Route
+
+```swift
+Route(.case(AppRoute.adminAction)) {
+    Method.post
+    Path { "admin"; "action" }
+    Headers {
+        Field("x-admin-token", .string)
+    }
+}
+```
+
+<Tip>
+When multiple values are present for the same header name (e.g. added via `addValue(_:forHTTPHeaderField:)`), `Field` consumes the first value and leaves the remaining values in place.
+</Tip>

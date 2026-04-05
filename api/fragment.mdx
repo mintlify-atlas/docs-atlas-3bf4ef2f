@@ -1,0 +1,156 @@
+---
+title: 'Fragment'
+description: 'Parses and prints the fragment (#…) component of a URL.'
+---
+
+## Overview
+
+`Fragment` reads the fragment subcomponent of a URL (the part after `#`) and passes the raw `Substring` to a value parser or conversion. Three initialiser forms mirror those on [`Body`](/api/body): empty (returns the whole fragment as a `String`), builder, and conversion.
+
+`Fragment` conforms to `ParserPrinter` when the underlying value parser does, enabling bidirectional use in route definitions.
+
+## Declaration
+
+```swift
+public struct Fragment<ValueParser: Parser>: Parser
+    where ValueParser.Input == Substring
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `ValueParser: ParserPrinter` |
+
+## Initializers
+
+### `init()` — empty form
+
+```swift
+public init()
+    where ValueParser == Parsers.MapConversion<
+        Parsers.ReplaceError<Rest<Substring>>, Conversions.SubstringToString
+    >
+```
+
+Returns the entire fragment as a `String`. If the fragment is absent the parser throws `RoutingError`; if it is present but empty, returns `""`.
+
+```swift
+let q = Fragment()
+
+var request = URLRequestData(string: "#section-3")!
+let fragment = try q.parse(&request)
+// fragment == "section-3"
+```
+
+### `init(value:)` — builder form
+
+```swift
+public init(@ParserBuilder<Substring> value: () -> ValueParser)
+```
+
+Parses the fragment with a `@ParserBuilder<Substring>` closure. Use this form when you need to match a specific literal or apply multiple parsers to the fragment string.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `value` | A `@ParserBuilder<Substring>` closure that receives the raw fragment and returns a typed value. |
+
+### `init(_:)` — conversion form
+
+```swift
+public init<C>(_ value: C)
+    where ValueParser == Parsers.MapConversion<Parsers.ReplaceError<Rest<Substring>>, C>
+```
+
+Applies a `Conversion` to the entire fragment substring. Useful for mapping the fragment to a custom type via a `Conversion` such as `.string.representing(MyType.self)`.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `value` | A `Conversion` that transforms the raw fragment `Substring` into a typed value. |
+
+## Usage examples
+
+### Reading a fragment as a plain string
+
+```swift
+let p = Fragment()
+
+var request = URLRequestData(string: "#faq")!
+let section = try p.parse(&request)
+// section == "faq"
+
+let data = try p.print("faq")
+// data == URLRequestData(fragment: "faq")
+```
+
+### Matching a specific literal fragment
+
+```swift
+let p = Fragment {
+    "section1"
+}
+
+var request = URLRequestData(string: "#section1")!
+try p.parse(&request)  // succeeds
+
+request = URLRequestData(string: "#section2")!
+try p.parse(&request)  // throws RoutingError
+
+let data = try p.print()
+// data == URLRequestData(fragment: "section1")
+```
+
+### Mapping to a custom type via conversion
+
+```swift
+struct Timestamp: Equatable, RawRepresentable {
+    let rawValue: String
+}
+
+let p = Fragment(.string.representing(Timestamp.self))
+
+var request = URLRequestData(
+    string: "https://www.pointfree.co/episodes/ep182#t802"
+)!
+let ts = try p.parse(&request)
+// ts == Timestamp(rawValue: "t802")
+
+let data = try p.print(Timestamp(rawValue: "t802"))
+// data == URLRequestData(fragment: "t802")
+```
+
+### Inside a Route (privacy policy sections)
+
+```swift
+enum AppRoute: Equatable {
+    case privacyPolicy(section: String)
+}
+
+let router = Route(.case(AppRoute.privacyPolicy(section:))) {
+    Path {
+        "legal"
+        "privacy"
+    }
+    Fragment()
+}
+
+var request = URLRequestData(string: "/legal/privacy#faq")!
+let route = try router.parse(&request)
+// route == .privacyPolicy(section: "faq")
+
+let data = try router.print(.privacyPolicy(section: "faq"))
+// data == URLRequestData(path: "/legal/privacy", fragment: "faq")
+```
+
+<Note>
+`Fragment` throws `RoutingError` if `URLRequestData.fragment` is `nil` (i.e. the URL has no `#` component at all). A fragment that is present but empty (e.g. `example.com#`) is valid and returns `""` from the empty initialiser.
+</Note>
+
+<Tip>
+The conversion form `Fragment(.string.representing(T.self))` is a convenient way to parse fragments that act as raw-value identifiers, such as timestamp anchors or named section identifiers.
+</Tip>

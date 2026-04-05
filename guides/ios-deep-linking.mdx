@@ -1,0 +1,191 @@
+---
+title: "iOS deep linking"
+description: "Use swift-url-routing to handle universal links and custom URL schemes in your iOS app."
+---
+
+iOS apps receive URLs from two sources: **universal links** (HTTPS URLs associated with your domain) and **custom URL schemes** (e.g., `myapp://`). In both cases, your app must parse the incoming URL and navigate the user to the correct screen.
+
+swift-url-routing gives you a single, type-safe router that handles both sources uniformly. Instead of writing fragile string-matching code, you define an `AppRoute` enum and let the router do the parsing.
+
+## Define your routes
+
+Start by modeling every deep-linkable screen as an enum. Each case carries only the data the screen needs — not URL structure details.
+
+```swift
+enum AppRoute: Equatable {
+  case home
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int)
+}
+```
+
+## Build the router
+
+Construct a router that maps URL patterns to `AppRoute` cases using `Route`, `Path`, `Query`, and `.case()`.
+
+```swift
+import URLRouting
+
+let appRouter = OneOf {
+  // GET /
+  Route(.case(AppRoute.home))
+
+  // GET /books
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&count=:count
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+<Note>
+`Route` defaults to GET. You do not need to add `Method.get` explicitly unless you want to be explicit about it.
+</Note>
+
+## Handle incoming URLs
+
+Write a single function that accepts a `URL`, matches it against the router, and navigates accordingly.
+
+```swift
+func handleDeepLink(url: URL) {
+  do {
+    switch try appRouter.match(url: url) {
+    case .home:
+      navigator.navigate(to: .home)
+
+    case .books:
+      navigator.navigate(to: .booksList)
+
+    case let .book(id: id):
+      navigator.navigate(to: .bookDetail(id: id))
+
+    case let .searchBooks(query: query, count: count):
+      navigator.navigate(to: .search(query: query, count: count))
+    }
+  } catch {
+    // URL did not match any known route
+    print("Unrecognized deep link: \(url)")
+  }
+}
+```
+
+## Set up the entry points
+
+<Tabs>
+  <Tab title="SwiftUI">
+    Use the `.onOpenURL` modifier on your root view. It fires for both universal links and custom URL schemes.
+
+    ```swift
+    @main
+    struct BooksApp: App {
+      var body: some Scene {
+        WindowGroup {
+          ContentView()
+            .onOpenURL { url in
+              handleDeepLink(url: url)
+            }
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="UIKit">
+    Implement both `AppDelegate` methods — one for custom URL schemes and one for universal links.
+
+    ```swift
+    // Custom URL schemes: myapp://books/42
+    func application(
+      _ app: UIApplication,
+      open url: URL,
+      options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    ) -> Bool {
+      handleDeepLink(url: url)
+      return true
+    }
+
+    // Universal links: https://mybooksapp.com/books/42
+    func application(
+      _ application: UIApplication,
+      continue userActivity: NSUserActivity,
+      restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+    ) -> Bool {
+      guard
+        userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+        let url = userActivity.webpageURL
+      else { return false }
+      handleDeepLink(url: url)
+      return true
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Use URLRoutingClient to call your backend
+
+If your app also talks to an API server that uses the same route enum, you can create a `URLRoutingClient` backed by the same router. This gives you a type-safe API client with no stringly-typed URLs.
+
+```swift
+// Configure the client with your server's base URL
+let apiClient = URLRoutingClient.live(
+  router: appRouter.baseURL("https://api.mybooksapp.com/v1")
+)
+
+// Make a request — the router generates the correct URL automatically
+let (data, response) = try await apiClient.data(for: .book(id: 42))
+
+// Or decode directly into a model
+let (book, _) = try await apiClient.decodedResponse(
+  for: .book(id: 42),
+  as: Book.self
+)
+```
+
+<Tip>
+Sharing the route enum between your app and your server means a URL mismatch becomes a compile-time error rather than a runtime crash.
+</Tip>
+
+## Generating URLs from routes
+
+The router is bidirectional, so you can also print routes back into paths or full URLs:
+
+```swift
+// Relative path — useful for in-app navigation links
+appRouter.path(for: .searchBooks(query: "Swift", count: 20))
+// "/books/search?query=Swift&count=20"
+
+// Absolute URL — useful for share sheets or clipboard
+let apiRouter = appRouter.baseURL("https://mybooksapp.com")
+apiRouter.url(for: .book(id: 42))
+// URL("https://mybooksapp.com/books/42")
+```
+
+## Handling routing errors
+
+`match(url:)` throws when no route matches the incoming URL. Wrap it in `do/catch` and decide how to respond — you might show an alert, open a fallback screen, or silently ignore the URL.
+
+```swift
+func handleDeepLink(url: URL) {
+  do {
+    let route = try appRouter.match(url: url)
+    navigate(to: route)
+  } catch {
+    // The URL is not a recognized deep link.
+    // Open the home screen or show a "not found" message.
+    navigator.navigate(to: .home)
+  }
+}
+```

@@ -1,0 +1,149 @@
+---
+title: 'FormData'
+description: 'Parses and prints application/x-www-form-urlencoded request bodies.'
+---
+
+## Overview
+
+`FormData` decodes `application/x-www-form-urlencoded` data from raw `Data` (a request body). It splits the bytes on `&`, splits each token on `=`, percent-decodes both name and value, and replaces `+` with space — exactly the rules mandated by the HTML form encoding specification.
+
+The decoded key-value pairs are handed to your `Field` parsers. `FormData` is always used inside a [`Body`](/api/body) parser, which provides the `Data` input.
+
+When printing, `FormData` re-encodes all field values back to percent-encoded form and joins them with `&`.
+
+## Declaration
+
+```swift
+public struct FormData<FieldParsers: Parser>: Parser
+    where FieldParsers.Input == URLRequestData.Fields
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `FieldParsers: ParserPrinter` |
+
+## Initializers
+
+### `init(build:)`
+
+```swift
+public init(@ParserBuilder<URLRequestData.Fields> build: () -> FieldParsers)
+```
+
+Builds a form-data parser from a `@ParserBuilder<URLRequestData.Fields>` closure listing the `Field` parsers for each form field.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `build` | A `@ParserBuilder` closure that lists `Field` parsers for each form field you want to extract. |
+
+## Encoding details
+
+When parsing, `FormData`:
+
+- Splits on `&` to get individual `name=value` tokens.
+- Splits each token on `=` (at most once) to separate name from value.
+- Replaces `+` with a space character in both name and value.
+- Applies percent-decoding to both name and value.
+- Field names are treated as **case-sensitive**.
+
+When printing, `FormData`:
+
+- Percent-encodes names and values using URL query parameter–allowed characters.
+- Joins all pairs with `&`.
+- Writes the result back as `Data`.
+
+The character set used excludes `:#[]@!$&'()*+,;=` from the standard URL query allowed set, ensuring safe round-trip encoding.
+
+## Usage examples
+
+### Parsing a simple form submission
+
+```swift
+let p = Body {
+    FormData {
+        Field("name", .string)
+        Field("age") { Int.parser() }
+    }
+}
+
+var request = URLRequestData(body: .init("name=Blob&age=42&debug=1".utf8))
+let (name, age) = try p.parse(&request)
+// name == "Blob", age == 42
+// Unconsumed body: "debug=1"
+```
+
+### Using defaults for optional fields
+
+```swift
+let p = Body {
+    FormData {
+        Field("q", .string, default: "")
+        Field("page", default: 1) { Digits() }
+    }
+}
+```
+
+### Bidirectional printing
+
+```swift
+let p = Body {
+    FormData {
+        Field("name", .string)
+        Field("age") { Int.parser() }
+    }
+}
+
+let data = try p.print(("Blob", 42))
+// data.body == Data("name=Blob&age=42".utf8)
+```
+
+### Inside a Route
+
+```swift
+struct LoginRequest: Equatable {
+    var username: String
+    var password: String
+}
+
+Route(.case(AppRoute.login)) {
+    Method.post
+    Path { "login" }
+    Body {
+        FormData {
+            Field("username", .string)
+            Field("password", .string)
+        }
+    }
+    .map(.memberwise(LoginRequest.init(username:password:)))
+}
+```
+
+### Percent-encoding and plus-as-space
+
+```swift
+// Input: "q=hello+world&tag=swift%20url"
+let p = Body {
+    FormData {
+        Field("q", .string)
+        Field("tag", .string)
+    }
+}
+
+var request = URLRequestData(body: .init("q=hello+world&tag=swift%20url".utf8))
+let (q, tag) = try p.parse(&request)
+// q == "hello world"
+// tag == "swift url"
+```
+
+<Note>
+`FormData`'s `Input` is `Data`, so it must be nested inside a `Body` parser. You cannot use `FormData` directly at the `URLRequestData` level.
+</Note>
+
+<Tip>
+For JSON request bodies use `Body(.json(T.self))`. Use `FormData` only for `application/x-www-form-urlencoded` payloads sent by HTML forms or similar clients.
+</Tip>

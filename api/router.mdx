@@ -1,0 +1,305 @@
+---
+title: "Router"
+description: "A type alias for any ParserPrinter that parses URLRequestData into a route output — the central type for building URL routers."
+---
+
+## Overview
+
+`Router` is a type alias, not a distinct type:
+
+```swift
+public typealias Router<Output> = ParserPrinter<URLRequestData, Output>
+```
+
+Any value that conforms to `ParserPrinter` with `Input == URLRequestData` is a `Router`. This includes `Route`, `OneOf`, and any other parser-printer composition you build with the swift-url-routing and swift-parsing libraries.
+
+The alias exists to give a more domain-specific name to what is otherwise a generic concept: a bidirectional parser over URL request data that can both match incoming requests and generate outgoing URLs.
+
+<Note>
+You typically do not instantiate `Router` directly. Instead, you compose `Route` parsers inside a `OneOf` block, and the resulting value _is_ a `Router` by virtue of the type alias.
+</Note>
+
+## Building a router
+
+Use `OneOf` from swift-parsing to combine multiple `Route` parsers into a single router. `OneOf` tries each route in order and succeeds with the first match.
+
+```swift
+import URLRouting
+
+enum AppRoute: Equatable {
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int)
+}
+
+let appRouter = OneOf {
+  // GET /books
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&count=:count
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+`appRouter` above has type `OneOf<...>`, which conforms to `ParserPrinter<URLRequestData, AppRoute>` — making it a `Router<AppRoute>`.
+
+## Methods
+
+All methods below are available on any value whose type is `ParserPrinter<URLRequestData, Output>` — that is, any `Router<Output>`.
+
+---
+
+### Matching (parsing)
+
+#### `match(url:)`
+
+```swift
+public func match(url: URL) throws -> Output
+```
+
+Parses a `URL` into a route value. Converts the URL to `URLRequestData` internally.
+
+Throws `RoutingError` if the URL cannot be parsed or if no route matches.
+
+**Example**
+
+```swift
+let route = try appRouter.match(url: URL(string: "/books/42")!)
+// AppRoute.book(id: 42)
+```
+
+---
+
+#### `match(path:)`
+
+```swift
+public func match(path: String) throws -> Output
+```
+
+Parses a URL path string (optionally including query parameters) into a route value.
+
+Throws `RoutingError` if the string is not a valid URL or if no route matches.
+
+**Example**
+
+```swift
+let route = try appRouter.match(path: "/books/search?query=Blob&count=5")
+// AppRoute.searchBooks(query: "Blob", count: 5)
+```
+
+---
+
+#### `match(request:)`
+
+```swift
+public func match(request: URLRequest) throws -> Output
+```
+
+Parses a `URLRequest` into a route value. Use this in server middleware where you receive a full request object.
+
+Throws `RoutingError` if the request cannot be converted or if no route matches.
+
+**Example**
+
+```swift
+var req = URLRequest(url: URL(string: "/books/42")!)
+req.httpMethod = "GET"
+let route = try appRouter.match(request: req)
+// AppRoute.book(id: 42)
+```
+
+---
+
+### Printing (URL generation)
+
+#### `url(for:)`
+
+```swift
+public func url(for route: Output) -> URL
+```
+
+Generates a `URL` for a given route value by printing it into `URLRequestData`.
+
+If the route cannot be printed (for example because no `Route` parser handles it), this method returns `URL(string: "#route-not-found")!` and triggers a breakpoint in debug builds rather than throwing.
+
+**Example**
+
+```swift
+let url = appRouter.url(for: .book(id: 42))
+// URL with path "/books/42"
+```
+
+---
+
+#### `path(for:)`
+
+```swift
+public func path(for route: Output) -> String
+```
+
+Generates a path and query string for a given route value.
+
+Returns `"#route-not-found"` (with a debug breakpoint) if the route cannot be printed.
+
+**Example**
+
+```swift
+appRouter.path(for: .searchBooks(query: "Blob Bio", count: 10))
+// "/books/search?query=Blob%20Bio&count=10"
+```
+
+---
+
+#### `request(for:)`
+
+```swift
+public func request(for route: Output) throws -> URLRequest
+```
+
+Generates a `URLRequest` for a given route value.
+
+Throws `RoutingError` if the route cannot be printed into a valid request.
+
+**Example**
+
+```swift
+let req = try appRouter.request(for: .book(id: 42))
+// URLRequest pointing to /books/42
+```
+
+---
+
+### Base URL
+
+#### `baseURL(_:)`
+
+```swift
+public func baseURL(_ urlString: String) -> BaseURLPrinter<Self>
+```
+
+Returns a new router that prepends a base URL when printing. The base URL's scheme, host, port, and path prefix are applied to every printed URL.
+
+Calling `fatalError` at initialization time if `urlString` is not a valid URL.
+
+**Parameters**
+
+- `urlString` — A base URL string such as `"https://api.example.com/v1"`.
+
+**Example**
+
+```swift
+let apiRouter = appRouter.baseURL("https://api.example.com/v1")
+
+apiRouter.url(for: .book(id: 42))
+// https://api.example.com/v1/books/42
+
+apiRouter.path(for: .book(id: 42))
+// /v1/books/42
+```
+
+<Tip>
+`baseURL` affects printing only. The underlying router still parses the same paths — without the base prefix — when matching incoming requests.
+</Tip>
+
+---
+
+#### `baseRequestData(_:)`
+
+```swift
+public func baseRequestData(_ requestData: URLRequestData) -> BaseURLPrinter<Self>
+```
+
+Returns a new router that merges default `URLRequestData` into every printed result. Use this to inject default headers, query parameters, or other request properties.
+
+**Parameters**
+
+- `requestData` — A `URLRequestData` value carrying default fields to merge into printed output.
+
+**Example**
+
+```swift
+let authenticatedRouter = appRouter.baseRequestData(
+  .init(headers: ["X-PointFree-Session": ["deadbeef"]])
+)
+
+let req = try authenticatedRouter.request(for: .books)
+req.value(forHTTPHeaderField: "x-pointfree-session")
+// "deadbeef"
+```
+
+---
+
+## Complete example
+
+The following shows a full client-side deep-linking setup using `Router`.
+
+```swift
+import URLRouting
+
+enum AppRoute: Equatable {
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int)
+}
+
+let appRouter = OneOf {
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+
+// Deep-linking: parse an incoming URL
+func handleDeepLink(url: URL) throws {
+  switch try appRouter.match(url: url) {
+  case .books:
+    // navigate to books list
+    break
+  case let .book(id: id):
+    // navigate to book detail for id
+    break
+  case let .searchBooks(query: query, count: count):
+    // navigate to search results
+    break
+  }
+}
+
+// URL generation: build links for server-side rendering or navigation
+let searchPath = appRouter.path(for: .searchBooks(query: "Blob Bio", count: 5))
+// "/books/search?query=Blob%20Bio&count=5"
+
+// With a base URL (e.g., for API calls or absolute links)
+let apiRouter = appRouter.baseURL("https://api.example.com/v1")
+let absoluteURL = apiRouter.url(for: .book(id: 99))
+// https://api.example.com/v1/books/99
+```
+
+## See also
+
+- [`Route`](/api/route) — builds individual endpoint parsers that you combine into a router
+- [`BaseURLPrinter`](/api/base-url-printer) — the type returned by `baseURL(_:)` and `baseRequestData(_:)`
+- [`URLRequestData`](/api/url-request-data) — the low-level input/output type that routers parse and print

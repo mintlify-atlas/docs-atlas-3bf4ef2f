@@ -1,0 +1,134 @@
+---
+title: "Routing model"
+description: "How swift-url-routing uses Swift enums to define type-safe, composable URL routes."
+---
+
+## Domain modeling with enums
+
+The first step when using swift-url-routing is a domain modeling exercise. You define a Swift enum where each case represents a distinct URL endpoint in your application, and the associated values of each case hold exactly the data you want to extract from that URL.
+
+```swift
+enum AppRoute {
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int = 10)
+}
+```
+
+Notice that the enum carries only the data you care about — an integer book ID, a query string, a result count. There are no raw URL strings, no path templates, and no query parameter names embedded here. The enum expresses **what** you want; the router expresses **where in the URL** it lives.
+
+## Why enum-based routing is type-safe
+
+Using a Swift enum as your route type gives you compiler-enforced exhaustiveness. When you switch over an `AppRoute` value, the compiler requires you to handle every case:
+
+```swift
+func handleDeepLink(url: URL) throws {
+  switch try appRouter.match(url: url) {
+  case .books:
+    // navigate to books screen
+
+  case let .book(id: id):
+    // navigate to book with id
+
+  case let .searchBooks(query: query, count: count):
+    // navigate to search screen with query and count
+  }
+}
+```
+
+If you add a new case to `AppRoute` and forget to handle it, the code will not compile. This is a fundamental advantage over string-based routing, where missing a route is a silent runtime failure.
+
+<Note>
+Default values in enum cases work as expected. `count: Int = 10` in `searchBooks` means the query parameter is optional — the router will produce `10` when it is absent from the URL.
+</Note>
+
+## Separating "what" from "where"
+
+The enum defines the **shape** of your data. The router defines the **location** of that data inside the URL. These two concerns are completely decoupled.
+
+For example, the `book(id:)` case says you need an integer ID. It says nothing about whether that ID is in a path segment, a query parameter, or a POST body. The router makes that decision:
+
+```swift
+// GET /books/:id — ID comes from the path
+Route(.case(AppRoute.book(id:))) {
+  Path { "books"; Digits() }
+}
+```
+
+You could change the URL structure without changing the enum, or add a new URL shape for the same route case, without touching any of the switch statements in your application code.
+
+## Mapping cases to URL patterns with `Route`
+
+The `Route` type is a parser that accumulates the data needed to construct one enum case. You combine it with path and query parsers inside its trailing closure:
+
+```swift
+// GET /books
+Route(.case(AppRoute.books)) {
+  Path { "books" }
+}
+
+// GET /books/:id
+Route(.case(AppRoute.book(id:))) {
+  Path { "books"; Digits() }
+}
+
+// GET /books/search?query=:query&count=:count
+Route(.case(AppRoute.searchBooks(query:count:))) {
+  Path { "books"; "search" }
+  Query {
+    Field("query")
+    Field("count", default: 10) { Digits() }
+  }
+}
+```
+
+Each `Route` block:
+
+1. Names the enum case it produces via `.case(...)`.
+2. Lists the parsers that extract values from `Path`, `Query`, headers, and so on.
+3. Validates that the entire path has been consumed — no leftover segments.
+
+## Composing routes with `OneOf`
+
+`OneOf` tries each route in order and succeeds on the first match. This is how you build a complete router from individual route definitions:
+
+```swift
+import URLRouting
+
+let appRouter = OneOf {
+  // GET /books
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&count=:count
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+<Tip>
+Order matters inside `OneOf`. More specific routes — like `/books/search` — should come before more general ones — like `/books/:id` — so the specific pattern gets a chance to match first.
+</Tip>
+
+The resulting `appRouter` value is a single object you pass around your application. It knows how to parse any recognized URL into an `AppRoute`, and — because every component is a parser-printer — it can also generate URLs from `AppRoute` values. See [Bidirectional routing](/concepts/bidirectional-routing) for details on URL generation.
+
+## The `Router` type alias
+
+The library defines `Router` as a convenience type alias:
+
+```swift
+public typealias Router<Output> = ParserPrinter<URLRequestData, Output>
+```
+
+A `Router<AppRoute>` is exactly a `ParserPrinter` whose input is `URLRequestData` and whose output is `AppRoute`. You will see both names used interchangeably in the codebase.

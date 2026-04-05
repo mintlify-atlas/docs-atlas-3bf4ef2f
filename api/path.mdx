@@ -1,0 +1,145 @@
+---
+title: "Path"
+description: "Parses and prints a request's path components incrementally."
+---
+
+## Overview
+
+`Path` consumes path components from the front of a request's URL one at a time. Each component is handed off to the parsers you list inside the `@PathBuilder` closure. String literals perform exact matching; typed parsers such as `Int.parser()` or `Digits()` extract typed values.
+
+Because `Path` conforms to `ParserPrinter` when all of its component parsers are also `ParserPrinter`s, it is bidirectional: the same definition that parses an incoming URL can reconstruct a URL for a given route value.
+
+## Declaration
+
+```swift
+public struct Path<ComponentParsers: Parser>: Parser
+    where ComponentParsers.Input == URLRequestData
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `ComponentParsers: ParserPrinter` |
+
+## Initializers
+
+### `init(build:)`
+
+```swift
+public init(@PathBuilder build: () -> ComponentParsers)
+```
+
+Builds a path parser from a `@PathBuilder` closure. Each statement in the closure is a parser for one path component; they are applied left-to-right, consuming one URL segment per parser.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `build` | A `@PathBuilder` result-builder closure that lists the component parsers in order. |
+
+## PathBuilder result builder
+
+`PathBuilder` is the `@resultBuilder` that powers the closure body. It accepts any `Parser` whose `Input` is `Substring` (for example string literals, `Digits()`, `Int.parser()`, `UUID.parser()`). Parsers whose input is `Substring.UTF8View` are automatically wrapped in a `From(.utf8)` conversion.
+
+```swift
+@resultBuilder
+public enum PathBuilder {
+    public static func buildBlock<P: Parser>(_ parser: P) -> Component<P>
+    public static func buildExpression<P: Parser>(_ parser: P) -> P
+        where P.Input == Substring
+    public static func buildExpression<P: Parser>(_ parser: P)
+        -> From<Conversions.SubstringToUTF8View, Substring.UTF8View, P>
+        where P.Input == Substring.UTF8View
+}
+```
+
+`PathBuilder.Component` is the parser produced for each component. It removes the first path segment from `URLRequestData.path` and hands the raw `Substring` to the wrapped parser. When printing, it prepends the printed segment back to the path.
+
+## Usage examples
+
+### Matching a literal segment
+
+```swift
+// Matches /users and consumes only that segment.
+let p = Path { "users" }
+try p.parse(URLRequestData(string: "/users")!)
+```
+
+### Parsing a typed value
+
+```swift
+// Matches any integer at the first path segment.
+let p = Path { Int.parser() }
+let id = try p.parse(URLRequestData(string: "/42")!)
+// id == 42
+```
+
+### Multi-segment paths
+
+```swift
+// Matches /users/<integer> and returns the integer ID.
+let p = Path {
+    "users"
+    Digits()
+}
+let userId = try p.match(path: "/users/42")
+// userId == 42
+```
+
+### Nested resource paths
+
+```swift
+// Matches /posts/<id>/comments
+let p = Path {
+    "posts"
+    Int.parser()
+    "comments"
+}
+let postId = try p.parse(URLRequestData(string: "/posts/99/comments")!)
+// postId == 99
+```
+
+### Bidirectional printing
+
+```swift
+let p = Path {
+    "users"
+    Int.parser()
+}
+
+// Parse
+let id = try p.parse(URLRequestData(string: "/users/7")!)
+// id == 7
+
+// Print
+let data = try p.print(7)
+// data.path == ["users", "7"]
+```
+
+### Inside a Route
+
+```swift
+enum AppRoute {
+    case user(Int)
+    case post(Int)
+}
+
+let router = OneOf {
+    Route(.case(AppRoute.user)) {
+        Path { "users"; Int.parser() }
+    }
+    Route(.case(AppRoute.post)) {
+        Path { "posts"; Int.parser() }
+    }
+}
+```
+
+<Note>
+`Path` consumes path components from the **front** of the URL. If a path component does not match the parser at that position, parsing throws a `RoutingError` and the input is left unchanged.
+</Note>
+
+<Tip>
+String literals inside `@PathBuilder` are interpreted as exact-match parsers via `ExpressibleByStringLiteral` conformances on `Parsing`. They will fail if the segment doesn't match exactly, including letter case.
+</Tip>

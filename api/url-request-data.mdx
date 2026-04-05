@@ -1,0 +1,225 @@
+---
+title: "URLRequestData"
+description: "A parseable, printable representation of a URL request. Stores URL components as slices for efficient incremental parsing."
+---
+
+## Overview
+
+`URLRequestData` is the currency type of the swift-url-routing library. Every router parses `URLRequestData` into a typed route and prints a typed route back into `URLRequestData`.
+
+The struct models all components of a URL request — scheme, host, path, query, headers, body, and more — and stores them as subsequences (`ArraySlice<Substring>`) so that parsers can consume components incrementally without copying data.
+
+You typically construct `URLRequestData` in two ways:
+
+- **From Foundation types** — using `init(request:)`, `init(url:)`, or `init(string:)` to convert an incoming `URLRequest` or URL for server-side routing.
+- **Directly in tests** — using the memberwise initializer to build precise fixtures for unit tests.
+
+## Declaration
+
+```swift
+public struct URLRequestData: Sendable, Equatable, _EmptyInitializable
+```
+
+## Conformances
+
+`Sendable`, `Equatable`, `Hashable`, `Codable`
+
+## Stored properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `body` | `Data?` | The HTTP request body. |
+| `fragment` | `String?` | The URL fragment component (the part after `#`). |
+| `headers` | `URLRequestData.Fields` | HTTP headers. Keys are lowercased for case-insensitive lookup. |
+| `host` | `String?` | The host component of the URL, e.g. `"api.example.com"`. |
+| `method` | `String?` | The HTTP method, e.g. `"GET"` or `"POST"`. |
+| `password` | `String?` | The password component of the URL's user-info. |
+| `path` | `ArraySlice<Substring>` | Path components as a slice. Parsers consume from the front. |
+| `port` | `Int?` | The port component of the URL. |
+| `query` | `URLRequestData.Fields` | Query parameters. Keys are case-sensitive. |
+| `scheme` | `String?` | The URL scheme, e.g. `"https"` or `"http"`. |
+| `user` | `String?` | The user component of the URL's user-info. |
+
+## Initializers
+
+### `init()`
+
+Creates an empty `URLRequestData` with all fields set to their zero values.
+
+```swift
+public init()
+```
+
+### `init(method:scheme:user:password:host:port:path:query:fragment:headers:body:)`
+
+The primary memberwise initializer. All parameters are optional and default to `nil` or empty.
+
+```swift
+@inlinable
+public init(
+  method: String? = nil,
+  scheme: String? = nil,
+  user: String? = nil,
+  password: String? = nil,
+  host: String? = nil,
+  port: Int? = nil,
+  path: String = "",
+  query: OrderedDictionary<String, [String?]> = [:],
+  fragment: String? = nil,
+  headers: OrderedDictionary<String, [String?]> = [:],
+  body: Data? = nil
+)
+```
+
+<Note>
+`path` is a plain `String` in the initializer (e.g. `"/episodes/42"`) and is split on `"/"` internally into an `ArraySlice<Substring>`. Query and header values accept `[String?]` arrays, where a `nil` element represents a key present without a value.
+</Note>
+
+### `init?(request:)` — from `URLRequest`
+
+Converts a Foundation `URLRequest` into parseable `URLRequestData`. Returns `nil` if the request has no URL or if `URLComponents` cannot parse the URL.
+
+```swift
+public init?(request: URLRequest)
+```
+
+### `init?(url:)` — from `URL`
+
+Convenience initializer that wraps a `URL` in a `URLRequest` and delegates to `init?(request:)`.
+
+```swift
+public init?(url: URL)
+```
+
+### `init?(string:)` — from a URL string
+
+Parses a URL string and converts the result to `URLRequestData`. Returns `nil` if the string is not a valid URL.
+
+```swift
+public init?(string: String)
+```
+
+## Nested type: `URLRequestData.Fields`
+
+`Fields` is an ordered key-value store used for both `query` and `headers`. Values are stored as `ArraySlice<Substring?>` for incremental parsing.
+
+```swift
+public struct Fields: Sendable
+```
+
+### Key case sensitivity
+
+| Context | Case sensitivity |
+|---------|-----------------|
+| `query` | Case-sensitive |
+| `headers` | Case-insensitive (keys lowercased on write) |
+
+### Subscript access
+
+```swift
+// Returns nil if the key is absent
+public subscript(name: String) -> ArraySlice<Substring?>?
+
+// Returns a default value if the key is absent
+public subscript(
+  name: String,
+  default defaultValue: @autoclosure () -> ArraySlice<Substring?>
+) -> ArraySlice<Substring?>
+```
+
+### `Fields` conformances
+
+`Sendable`, `Equatable`, `Hashable`, `Collection`, `ExpressibleByDictionaryLiteral`
+
+The `Collection` conformance lets you iterate over `(key, values)` pairs with a standard `for` loop.
+
+## Foundation conversions
+
+The `URLRequestData+Foundation` module provides additional types for round-tripping between Foundation and `URLRequestData`.
+
+### `URLComponents(data:)`
+
+Converts `URLRequestData` back into `URLComponents` for URL construction.
+
+```swift
+public init(data: URLRequestData)
+```
+
+### `URLRequest(data:)`
+
+Converts `URLRequestData` into a `URLRequest`. Returns `nil` if `URLComponents` cannot produce a valid URL from the data.
+
+```swift
+public init?(data: URLRequestData)
+```
+
+## Examples
+
+### Constructing `URLRequestData` for testing
+
+```swift
+// A GET request to /episodes/42
+let requestData = URLRequestData(
+  method: "GET",
+  scheme: "https",
+  host: "api.example.com",
+  path: "/episodes/42"
+)
+
+// A POST request with a JSON body
+let body = try JSONEncoder().encode(["title": "New Episode"])
+let postRequest = URLRequestData(
+  method: "POST",
+  path: "/episodes",
+  body: body
+)
+
+// A request with query parameters and headers
+let searchRequest = URLRequestData(
+  path: "/search",
+  query: ["q": ["swift"], "page": ["1"]],
+  headers: ["Authorization": ["Bearer token123"]]
+)
+```
+
+### Parsing an incoming `URLRequest` (server-side)
+
+```swift
+func handle(_ request: URLRequest) throws {
+  guard let requestData = URLRequestData(request: request) else { return }
+  let route = try router.parse(requestData)
+  // dispatch on route...
+}
+```
+
+### Parsing from a URL string
+
+```swift
+var requestData = URLRequestData(string: "/?name=Blob&age=42")!
+let (name, age) = try Query {
+  Field("name")
+  Field("age") { Int.parser() }
+}.parse(&requestData)
+// name == "Blob", age == 42
+```
+
+### Printing a route back to a `URLRequest`
+
+```swift
+let requestData = try router.print(.episode(id: 1))
+guard let urlRequest = URLRequest(data: requestData) else { return }
+// urlRequest is ready to pass to URLSession
+```
+
+### Working with `Fields` directly
+
+```swift
+var headers = URLRequestData.Fields([:], isNameCaseSensitive: false)
+// Values are stored as ArraySlice<Substring?>
+headers["Content-Type"] = ArraySlice(["application/json"])
+
+// Case-insensitive: both access the same key (stored lowercased)
+let ct1 = headers["content-type"]
+let ct2 = headers["Content-Type"]
+// ct1 == ct2
+```

@@ -1,0 +1,135 @@
+---
+title: "Query"
+description: "Parses and prints a request's query string using named field parsers."
+---
+
+## Overview
+
+`Query` extracts values from the query string of a URL. You compose it with one or more `Field` parsers, each targeting a specific query parameter by name.
+
+Because `Query` conforms to `ParserPrinter` when its inner field parsers are also `ParserPrinter`s, it can both parse an incoming request and reconstruct the query string for a given value—making it suitable for link generation and deep linking.
+
+## Declaration
+
+```swift
+public struct Query<FieldParsers: Parser>: Parser
+    where FieldParsers.Input == URLRequestData.Fields
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `FieldParsers: ParserPrinter` |
+
+## Initializers
+
+### `init(build:)`
+
+```swift
+public init(@ParserBuilder<URLRequestData.Fields> build: () -> FieldParsers)
+```
+
+Builds a query parser from a `@ParserBuilder<URLRequestData.Fields>` closure that lists `Field` parsers.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `build` | A `@ParserBuilder` closure that lists the `Field` parsers to apply to the query string. |
+
+## Usage examples
+
+### Parsing a single query parameter
+
+```swift
+let p = Query {
+    Field("q")
+}
+
+var request = URLRequestData(string: "/?q=swift")!
+let search = try p.parse(&request)
+// search == "swift"
+```
+
+### Parsing multiple parameters with types
+
+```swift
+let p = Query {
+    Field("name")
+    Field("age") { Int.parser() }
+}
+
+var request = URLRequestData(string: "/?name=Blob&age=42&debug=1")!
+let (name, age) = try p.parse(&request)
+// name == "Blob", age == 42
+// request.query still contains ["debug": ["1"]]
+```
+
+### Default values for optional parameters
+
+```swift
+let p = Query {
+    Field("q", .string, default: "")
+    Field("page", default: 1) {
+        Digits()
+    }
+    Field("per_page", default: 20) {
+        Digits()
+    }
+}
+
+// No query string — all defaults apply
+var request = URLRequestData(string: "/search")!
+let (q, page, perPage) = try p.parse(&request)
+// q == "", page == 1, perPage == 20
+```
+
+### Bidirectional printing
+
+```swift
+let p = Query {
+    Field("name")
+    Field("age") { Int.parser() }
+}
+
+// Print reconstructs the query parameters
+let data = try p.print(("Blob", 42))
+// URLRequestData(query: ["name": ["Blob"], "age": ["42"]])
+```
+
+Default values are omitted when printing:
+
+```swift
+let p = Query {
+    Field("page", default: 1) { Int.parser() }
+}
+
+try p.print(10)  // URLRequestData(query: ["page": ["10"]])
+try p.print(1)   // URLRequestData(query: [:])  — default omitted
+```
+
+### Inside a Route
+
+```swift
+enum AppRoute {
+    case search(query: String, page: Int)
+}
+
+let router = Route(.case(AppRoute.search)) {
+    Path { "search" }
+    Query {
+        Field("q")
+        Field("page", default: 1) { Digits() }
+    }
+}
+```
+
+<Note>
+`Query` only reads the parameters your `Field` parsers request. Unrecognised query parameters remain in `URLRequestData.query` and are not consumed.
+</Note>
+
+<Tip>
+When a field has a `default:` value and that default matches the value being printed, `Query` omits the parameter from the output entirely. This keeps generated URLs clean.
+</Tip>

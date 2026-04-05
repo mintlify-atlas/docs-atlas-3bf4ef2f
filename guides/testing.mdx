@@ -1,0 +1,285 @@
+---
+title: "Testing"
+description: "Test routers, individual parsers, and features that depend on URLRoutingClient."
+---
+
+swift-url-routing has first-class support for testing. Because the router is bidirectional, you can verify both directions independently: that a URL parses to the expected route, and that a route prints to the expected URL. For features that use `URLRoutingClient`, the library provides a `.failing` client and `.override(_:with:)` to supply mocked responses without hitting the network.
+
+## Setting up the test target
+
+<Steps>
+  <Step title="Add URLRouting to your test target">
+    Make sure your test target depends on the same `URLRouting` product as your main target.
+
+    ```swift
+    // Package.swift
+    .testTarget(
+      name: "MyAppTests",
+      dependencies: [
+        "MyApp",
+        .product(name: "URLRouting", package: "swift-url-routing"),
+      ]
+    )
+    ```
+  </Step>
+  <Step title="Import URLRouting in your test file">
+    ```swift
+    import URLRouting
+    import XCTest
+    ```
+  </Step>
+</Steps>
+
+## Testing the parsing direction
+
+Use `match(url:)` or `match(request:)` to assert that an incoming URL produces the expected route value.
+
+```swift
+func testBookRoute() throws {
+  XCTAssertEqual(
+    try appRouter.match(url: URL(string: "/books/42")!),
+    .book(id: 42)
+  )
+}
+
+func testSearchRoute() throws {
+  XCTAssertEqual(
+    try appRouter.match(url: URL(string: "/books/search?query=Swift&count=5")!),
+    .searchBooks(query: "Swift", count: 5)
+  )
+}
+
+func testSearchRouteDefaultCount() throws {
+  // count defaults to 10 when the query parameter is absent
+  XCTAssertEqual(
+    try appRouter.match(url: URL(string: "/books/search?query=Blob")!),
+    .searchBooks(query: "Blob", count: 10)
+  )
+}
+```
+
+Use `XCTAssertThrowsError` to verify that an unrecognized URL does not match any route:
+
+```swift
+func testUnknownRouteThrows() {
+  XCTAssertThrowsError(
+    try appRouter.match(url: URL(string: "/unknown/path")!)
+  )
+}
+```
+
+## Testing the printing direction
+
+Use `path(for:)` or `url(for:)` to assert that a route value produces the expected URL string.
+
+```swift
+func testPrintBookRoute() {
+  XCTAssertEqual(
+    appRouter.path(for: .book(id: 42)),
+    "/books/42"
+  )
+}
+
+func testPrintSearchRoute() {
+  XCTAssertEqual(
+    appRouter.path(for: .searchBooks(query: "Blob Bio", count: 10)),
+    "/books/search?query=Blob%20Bio"  // default count omitted
+  )
+}
+
+func testPrintSearchRouteNonDefaultCount() {
+  XCTAssertEqual(
+    appRouter.path(for: .searchBooks(query: "Swift", count: 5)),
+    "/books/search?query=Swift&count=5"
+  )
+}
+```
+
+## Round-trip testing
+
+A round-trip test parses a URL into a route and then prints it back, asserting the output matches the original URL. This catches mismatches between the parser and printer.
+
+```swift
+func testRoundTrip() throws {
+  let url = URL(string: "/books/search?query=Swift&count=5")!
+  let route = try appRouter.match(url: url)
+  XCTAssertEqual(appRouter.path(for: route), url.absoluteString)
+}
+```
+
+<Tip>
+Round-trip tests are especially useful for routes with many query parameters, where a typo in a field name could cause the parser and printer to diverge silently.
+</Tip>
+
+## Testing individual parsers
+
+You can test `Path`, `Query`, `Method`, and other parsers in isolation without going through the full router. This is useful for unit-testing a single component:
+
+<Tabs>
+  <Tab title="Path">
+    ```swift
+    func testPathParser() throws {
+      // Parsing
+      XCTAssertEqual(
+        123,
+        try Path { Int.parser() }.match(path: "/123")
+      )
+
+      // Parsing fails on non-integer input
+      XCTAssertThrowsError(
+        try Path { Int.parser() }.parse(URLRequestData(path: "/abc"))
+      )
+    }
+    ```
+  </Tab>
+  <Tab title="Query">
+    ```swift
+    func testQueryParser() throws {
+      let parser = Query {
+        Field("name")
+        Field("age") { Int.parser() }
+      }
+
+      var request = URLRequestData(string: "/?name=Blob&age=42&debug=1")!
+      let (name, age) = try parser.parse(&request)
+      XCTAssertEqual("Blob", name)
+      XCTAssertEqual(42, age)
+      // Unconsumed query items remain in request
+      XCTAssertEqual(["debug": ["1"]], request.query)
+    }
+
+    func testQueryPrinting() throws {
+      let parser = Query {
+        Field("name")
+        Field("age") { Int.parser() }
+      }
+
+      XCTAssertEqual(
+        try parser.print(("Blob", 42)),
+        URLRequestData(query: ["name": ["Blob"], "age": ["42"]])
+      )
+    }
+    ```
+  </Tab>
+  <Tab title="Method">
+    ```swift
+    func testMethodParser() throws {
+      XCTAssertNoThrow(
+        try Method.post.parse(URLRequestData(method: "POST"))
+      )
+      XCTAssertEqual(
+        try Method.post.print(),
+        URLRequestData(method: "POST")
+      )
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Testing features that use URLRoutingClient
+
+Use `URLRoutingClient.failing` as a starting point for testing features that depend on an API client. This client throws an error for any route that is not explicitly overridden, which prevents tests from making accidental network requests and makes it obvious when a route is called unexpectedly.
+
+### Basic override with .ok
+
+Override a specific route to return mocked data using `.override(_:with:)` and `Result.ok(_:)`:
+
+```swift
+func testFetchBook() async throws {
+  let expectedBook = Book(id: 42, title: "Blob Autobiography", author: "Blob")
+
+  let client = URLRoutingClient<AppRoute>.failing
+    .override(.book(id: 42)) {
+      try .ok(expectedBook)
+    }
+
+  // Feature under test
+  let viewModel = BookDetailViewModel(id: 42, apiClient: client)
+  await viewModel.loadBook()
+
+  XCTAssertEqual(viewModel.book, expectedBook)
+}
+```
+
+### Override with a predicate
+
+When the route value is not `Equatable`, or when you want to match a family of routes, use the predicate overload:
+
+```swift
+func testSearchBooks() async throws {
+  let results = [Book(id: 1, title: "Swift Handbook", author: "Blob")]
+
+  let client = URLRoutingClient<AppRoute>.failing
+    .override(
+      { if case .searchBooks = $0 { return true } else { return false } },
+      with: { try .ok(results) }
+    )
+
+  let viewModel = SearchViewModel(apiClient: client)
+  await viewModel.search(query: "Swift")
+
+  XCTAssertEqual(viewModel.results, results)
+}
+```
+
+### Override using case extraction
+
+The extract overload lets you pull the associated value out of the matching route and use it in your response:
+
+```swift
+func testFetchBookByID() async throws {
+  let client = URLRoutingClient<AppRoute>.failing
+    .override(
+      { guard case let .book(id: id) = $0 else { return nil }; return id },
+      with: { id in
+        try .ok(Book(id: id, title: "Book #\(id)", author: "Blob"))
+      }
+    )
+
+  let (book, _) = try await client.data(for: .book(id: 7))
+  // book contains the mocked response for id 7
+}
+```
+
+### Chaining multiple overrides
+
+Chain `.override` calls to cover all routes exercised by the feature under test:
+
+```swift
+let client = URLRoutingClient<AppRoute>.failing
+  .override(.books) {
+    try .ok([Book(id: 1, title: "Blob Autobiography", author: "Blob")])
+  }
+  .override(.book(id: 1)) {
+    try .ok(Book(id: 1, title: "Blob Autobiography", author: "Blob"))
+  }
+```
+
+<Note>
+Any route not covered by an `.override` will fail the test immediately with a descriptive error message, making it easy to find unexpected API calls.
+</Note>
+
+## Testing with a custom JSONDecoder
+
+`URLRoutingClient` accepts a custom `JSONDecoder` for decoding responses. You can verify that your decoder strategy is applied correctly in tests:
+
+```swift
+func testSnakeCaseDecoding() async throws {
+  struct Response: Equatable, Decodable {
+    let decodableValue: String
+  }
+
+  let customDecoder = JSONDecoder()
+  customDecoder.keyDecodingStrategy = .convertFromSnakeCase
+
+  let client = URLRoutingClient<AppRoute>(
+    request: { _ in
+      ("{\"decodable_value\":\"result\"}".data(using: .utf8)!, URLResponse())
+    },
+    decoder: customDecoder
+  )
+
+  let response = try await client.decodedResponse(for: .books, as: Response.self)
+  XCTAssertEqual(response.value, Response(decodableValue: "result"))
+}
+```

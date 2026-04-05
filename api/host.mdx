@@ -1,0 +1,119 @@
+---
+title: 'Host'
+description: 'Parses and prints the host component of a URL.'
+---
+
+## Overview
+
+`Host` is a `ParserPrinter` that matches the host (domain or IP) of a URL. Use it inside a `Route` builder to restrict routing to requests sent to a specific host.
+
+When parsing, `Host` reads `URLRequestData.host` and throws `RoutingError` if it doesn't match. When printing, it writes the host name back into `URLRequestData`.
+
+## Declaration
+
+```swift
+public struct Host: ParserPrinter
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `ParserPrinter` | Always |
+
+## Static methods
+
+### `Host.custom(_:)`
+
+```swift
+public static func custom(_ host: String) -> Self
+```
+
+Creates a `Host` parser that matches a specific hostname. This is an alias for `Host(host)`.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `host` | The host name to match (e.g. `"api.example.com"`, `"localhost"`). |
+
+## Initializers
+
+### `init(_:)`
+
+```swift
+public init(_ name: String)
+```
+
+Creates a host parser for any hostname string.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `name` | The host name to match. |
+
+## Usage examples
+
+### Matching a specific API host
+
+```swift
+Route(.case(AppRoute.api)) {
+    Host("api.pointfree.co")
+    Path { "episodes" }
+}
+```
+
+### Using the static factory method
+
+```swift
+// Both forms are equivalent
+Host("api.example.com")
+Host.custom("api.example.com")
+```
+
+### Routing different subdomains
+
+```swift
+let router = OneOf {
+    Route(.case(AppRoute.publicSite)) {
+        Host("www.example.com")
+        Path { "about" }
+    }
+    Route(.case(AppRoute.apiV1)) {
+        Host("api.example.com")
+        Path { "v1" }
+    }
+}
+```
+
+### Deep-link host matching
+
+```swift
+Route(.case(AppRoute.openProfile)) {
+    Scheme("myapp")
+    Host.custom("profile")
+    Path { Int.parser() }
+}
+// Matches: myapp://profile/42
+```
+
+### Parsing and printing
+
+```swift
+// Parse
+try Host.custom("foo").parse(URLRequestData(host: "foo"))   // succeeds
+try Host.custom("foo").parse(URLRequestData(host: "bar"))   // throws RoutingError
+
+// Print
+let data = try Host.custom("foo").print()
+// data == URLRequestData(host: "foo")
+```
+
+<Warning>
+Do not use `Host` to control which host is **printed** when generating URLs. For that purpose, use `BaseURLPrinter` via the `baseURL(_:)` or `baseRequestData(_:)` methods on your router. Setting a host via `Host` during printing works but bypasses the intent of those helpers.
+</Warning>
+
+<Tip>
+`Host` is particularly useful when building universal link routers that need to dispatch on both scheme and host (e.g. `https://app.example.com/...` vs. `myapp://...`).
+</Tip>

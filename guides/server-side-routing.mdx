@@ -1,0 +1,215 @@
+---
+title: "Server-side routing"
+description: "Define, parse, and generate URLs for HTTP endpoints in server-side Swift applications."
+---
+
+swift-url-routing works equally well on the server. Because the router is **bidirectional**, it can both parse incoming `URLRequest` objects into typed route values _and_ generate valid URLs for those same routes — which is essential for building links inside HTML responses.
+
+## Define your routes
+
+Model your HTTP API as an enum. Each case represents a distinct endpoint and carries only the data that endpoint needs.
+
+```swift
+enum SiteRoute: Equatable {
+  case books
+  case book(id: Int)
+  case createBook(BookRequest)
+  case updateBook(id: Int, BookRequest)
+  case deleteBook(id: Int)
+  case searchBooks(query: String, page: Int, perPage: Int)
+}
+
+struct BookRequest: Codable, Equatable {
+  var title: String
+  var author: String
+}
+```
+
+## Build the router
+
+Use `Method` parsers to restrict each route to the correct HTTP verb. `Route` defaults to GET, so you only need to add `Method.post`, `Method.put`, or `Method.delete` for non-GET routes.
+
+```swift
+import URLRouting
+
+let siteRouter = OneOf {
+  // GET /books
+  Route(.case(SiteRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(SiteRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // POST /books
+  Route(.case(SiteRoute.createBook)) {
+    Method.post
+    Path { "books" }
+    Body(.json(BookRequest.self))
+  }
+
+  // PUT /books/:id
+  Route(.case(SiteRoute.updateBook(id:_:))) {
+    Method.put
+    Path { "books"; Digits() }
+    Body(.json(BookRequest.self))
+  }
+
+  // DELETE /books/:id
+  Route(.case(SiteRoute.deleteBook(id:))) {
+    Method.delete
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&page=:page&per_page=:perPage
+  Route(.case(SiteRoute.searchBooks(query:page:perPage:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("page", default: 1) { Digits() }
+      Field("per_page", default: 20) { Digits() }
+    }
+  }
+}
+```
+
+## Parse incoming requests
+
+Use `match(request:)` to transform a `URLRequest` into your route enum. Switch on the result to dispatch to the correct handler.
+
+```swift
+import Foundation
+
+func handle(request: URLRequest) throws -> HTTPResponse {
+  switch try siteRouter.match(request: request) {
+  case .books:
+    let books = try db.fetchAllBooks()
+    return .ok(books)
+
+  case let .book(id: id):
+    guard let book = try db.fetchBook(id: id) else {
+      return .notFound
+    }
+    return .ok(book)
+
+  case let .createBook(bookRequest):
+    let book = try db.createBook(
+      title: bookRequest.title,
+      author: bookRequest.author
+    )
+    return .created(book)
+
+  case let .updateBook(id: id, bookRequest):
+    let book = try db.updateBook(
+      id: id,
+      title: bookRequest.title,
+      author: bookRequest.author
+    )
+    return .ok(book)
+
+  case let .deleteBook(id: id):
+    try db.deleteBook(id: id)
+    return .noContent
+
+  case let .searchBooks(query: query, page: page, perPage: perPage):
+    let results = try db.searchBooks(query: query, page: page, perPage: perPage)
+    return .ok(results)
+  }
+}
+```
+
+<Note>
+`match(request:)` throws a `RoutingError` when no route matches. Handle this at your server's middleware layer to return a 404 response.
+</Note>
+
+## Generate URLs from routes
+
+Because the router is a parser-printer, you can generate URLs for any route value. This is useful for producing links in HTML responses and for issuing redirect responses.
+
+```swift
+// Relative path — embed in HTML
+siteRouter.path(for: .book(id: 42))
+// "/books/42"
+
+siteRouter.path(for: .searchBooks(query: "Swift", page: 1, perPage: 20))
+// "/books/search?query=Swift&page=1&per_page=20"
+```
+
+For redirect responses, generate the path and return it as a `Location` header:
+
+```swift
+case let .createBook(bookRequest):
+  let book = try db.createBook(
+    title: bookRequest.title,
+    author: bookRequest.author
+  )
+  let location = siteRouter.path(for: .book(id: book.id))
+  return .redirect(to: location) // 301 Location: /books/99
+```
+
+## Configure a base URL for absolute URLs
+
+Use `baseURL(_:)` to configure a base URL so the router can produce absolute URLs instead of relative paths. This is useful for generating links in emails or API responses that reference your public domain.
+
+```swift
+let productionRouter = siteRouter.baseURL("https://api.mybooksapp.com/v1")
+
+productionRouter.url(for: .book(id: 42))
+// URL("https://api.mybooksapp.com/v1/books/42")
+```
+
+You can swap in a different base URL for local development without changing any route definitions:
+
+```swift
+#if DEBUG
+let router = siteRouter.baseURL("http://localhost:8080")
+#else
+let router = siteRouter.baseURL("https://api.mybooksapp.com/v1")
+#endif
+```
+
+## Multi-tenant routing with Scheme and Host
+
+Use `Scheme` and `Host` parsers to route requests based on the scheme or hostname. This is useful for APIs that serve multiple tenants or environments from a single router.
+
+```swift
+enum TenantRoute {
+  case api(SiteRoute)
+  case admin(AdminRoute)
+}
+
+let tenantRouter = OneOf {
+  // Route api.mybooksapp.com requests
+  Route(.case(TenantRoute.api)) {
+    Host("api.mybooksapp.com")
+    siteRouter
+  }
+
+  // Route admin.mybooksapp.com requests
+  Route(.case(TenantRoute.admin)) {
+    Host("admin.mybooksapp.com")
+    adminRouter
+  }
+}
+```
+
+## Handling routing errors
+
+When `match(request:)` throws, no registered route matched the incoming request. Return a 404 response and optionally log the unmatched URL for debugging.
+
+```swift
+func handle(request: URLRequest) -> HTTPResponse {
+  do {
+    let route = try siteRouter.match(request: request)
+    return try dispatch(route: route)
+  } catch {
+    // No route matched — return 404
+    return HTTPResponse(
+      statusCode: 404,
+      body: "Not found: \(request.url?.path ?? "unknown")"
+    )
+  }
+}
+```

@@ -1,0 +1,212 @@
+---
+title: "Parser-printers"
+description: "The composable parser-printer abstraction that powers swift-url-routing's type-safe, bidirectional URL parsing."
+---
+
+## What a parser is
+
+A parser is a value that consumes some input incrementally and produces a typed output. The input is passed as an `inout` parameter so that each parser can remove exactly what it consumed, leaving the rest for subsequent parsers.
+
+In the context of swift-url-routing, the input is always a `URLRequestData` — a structured decomposition of a URL request into its constituent parts: path segments, query fields, headers, body, and more.
+
+```swift
+public struct URLRequestData: Sendable, Equatable {
+  public var body: Data?
+  public var fragment: String?
+  public var headers: Fields
+  public var host: String?
+  public var method: String?
+  public var path: ArraySlice<Substring>   // consumed segment by segment
+  public var query: Fields                 // consumed field by field
+  public var scheme: String?
+  // ...
+}
+```
+
+Using `ArraySlice<Substring>` for `path` and a dictionary of `ArraySlice` values for query fields means parsers can remove consumed elements in O(1) without copying the data.
+
+## What a parser-printer is
+
+A `ParserPrinter` extends the parser concept with a `print` operation that inverts parsing. Given an output value, it reconstructs the input that would have produced that output.
+
+Because printing is the inverse of parsing, a correctly implemented `ParserPrinter` satisfies this invariant:
+
+```swift
+// Parsing then printing roundtrips the input
+let route = try router.match(url: url)
+let reconstructed = router.url(for: route)
+
+// Printing then parsing roundtrips the output
+let url = router.url(for: .book(id: 42))
+let route = try router.match(url: url)  // .book(id: 42)
+```
+
+<Note>
+Not every parser needs to be a printer. The `ParserPrinter` conformance is only required when you want URL generation. The library is designed so that adding printing support to a custom parser is straightforward.
+</Note>
+
+## Built on swift-parsing
+
+swift-url-routing is built on top of [swift-parsing](https://github.com/pointfreeco/swift-parsing), which provides the core `Parser` and `ParserPrinter` protocols, result builders, and primitive parsers such as `Digits`, `Rest`, `Always`, and `OneOf`.
+
+The library re-exports swift-parsing in full:
+
+```swift
+@_exported import Parsing
+```
+
+This means you have access to the entire swift-parsing API whenever you import `URLRouting`. Parsers like `Digits()`, `UUID()`, and `OneOf` are all available without a separate import.
+
+## `URLRequestData` as the input type
+
+All URL routing parsers work against a single input type: `URLRequestData`. Each parser knows which part of the request it owns:
+
+| Parser | Consumes |
+|--------|----------|
+| `Path` | Leading segments of `path` |
+| `Query` | Named fields from `query` |
+| `Headers` | Named fields from `headers` |
+| `Method` | The `method` string |
+| `Scheme` | The `scheme` string |
+| `Host` | The `host` string |
+| `Body` | The `body` data |
+
+Parsers consume their portion of `URLRequestData` and leave the rest untouched, allowing multiple parsers to cooperate on a single request.
+
+## Combining parsers with result builders
+
+swift-url-routing uses Swift result builders to let you compose parsers with a declarative, block-based syntax. Two builders are in use:
+
+**`@PathBuilder`** — used inside `Path { }` to list the parsers for successive path segments:
+
+```swift
+Path {
+  "books"       // matches the literal string "books"
+  Digits()      // parses the next segment as an integer
+}
+// Parses /books/42 → 42
+```
+
+**`@ParserBuilder`** — used inside `Route { }`, `Query { }`, and other contexts to sequence multiple parsers and collect their outputs into a tuple:
+
+```swift
+Route(.case(AppRoute.searchBooks(query:count:))) {
+  Path { "books"; "search" }
+  Query {
+    Field("query")
+    Field("count", default: 10) { Digits() }
+  }
+}
+```
+
+Each expression inside the builder is a parser. The builder sequences them and accumulates their outputs.
+
+## `Route`: a URL endpoint parser-printer
+
+`Route` is the primary building block for defining a single URL endpoint. It wraps a sequence of parsers and maps their combined output to a specific value or enum case.
+
+```swift
+public struct Route<Parsers: Parser>: Parser where Parsers.Input == URLRequestData
+```
+
+`Route` also validates that the entire path has been consumed after parsing, preventing partial matches. When its inner parsers all conform to `ParserPrinter`, `Route` conforms to `ParserPrinter` too:
+
+```swift
+extension Route: ParserPrinter where Parsers: ParserPrinter {
+  public func print(_ output: Parsers.Output, into input: inout URLRequestData) rethrows {
+    try self.parsers.print(output, into: &input)
+  }
+}
+```
+
+## `Path` and `Query`: component parsers
+
+`Path` and `Query` follow the same pattern — they are parsers over `URLRequestData` that delegate to inner parsers operating on their respective sub-structures:
+
+```swift
+// Path delegates to ComponentParsers operating on path segments
+public struct Path<ComponentParsers: Parser>: Parser
+where ComponentParsers.Input == URLRequestData
+
+// Query delegates to FieldParsers operating on URLRequestData.Fields
+public struct Query<FieldParsers: Parser>: Parser
+where FieldParsers.Input == URLRequestData.Fields
+```
+
+Both become `ParserPrinter`s when their inner parsers do, propagating printability through the composition:
+
+```swift
+extension Path: ParserPrinter where ComponentParsers: ParserPrinter {
+  public func print(_ output: ComponentParsers.Output, into input: inout URLRequestData) rethrows {
+    try self.componentParsers.print(output, into: &input)
+  }
+}
+```
+
+## `OneOf`: branching and routing
+
+`OneOf` tries each of its child parsers in sequence and succeeds on the first one that does not throw. This is how you route across multiple endpoints:
+
+```swift
+let appRouter = OneOf {
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+When **printing**, `OneOf` inverts the routing logic: it tries each branch in turn and uses the first one that can successfully print the given output value. This is how `appRouter.path(for: .book(id: 42))` knows to use the second branch — the other branches cannot print a `.book` value.
+
+<Tip>
+Place more specific routes before more general ones inside `OneOf`. When parsing, the first successful match wins. `/books/search` must come before `/books/:id` or the latter will consume the `"search"` segment as an integer and fail.
+</Tip>
+
+## The `.case()` conversion
+
+The `.case()` conversion connects a `ParserPrinter` to a specific enum case. It creates a `Conversion` that applies the case constructor when parsing and pattern-matches the case when printing:
+
+```swift
+Route(.case(AppRoute.book(id:))) {
+  Path { "books"; Digits() }
+}
+```
+
+- **Parsing**: the path parser extracts an `Int`, and `.case(AppRoute.book(id:))` wraps it in `.book(id: 42)`.
+- **Printing**: `.case(AppRoute.book(id:))` unwraps `.book(id: 42)` back to `42`, and the path parser reconstructs `["books", "42"]`.
+
+<Info>
+`.case()` is provided by swift-parsing's `CasePaths` integration. It works with any enum case that has a unique, non-ambiguous associated value pattern.
+</Info>
+
+## Composability in practice
+
+The power of the parser-printer abstraction is that small, testable pieces compose into larger ones with no loss of type safety or bidirectionality. A full routing stack looks like this:
+
+<Steps>
+  <Step title="Primitive parsers">
+    `Digits()`, `UUID()`, string literals — parse and print individual values.
+  </Step>
+  <Step title="Component parsers">
+    `Path { }`, `Query { }`, `Field` — parse and print URL sub-structures.
+  </Step>
+  <Step title="Route parsers">
+    `Route(.case(...)) { }` — combine component parsers and map to an enum case.
+  </Step>
+  <Step title="Router">
+    `OneOf { }` — combine route parsers into a complete, bidirectional router.
+  </Step>
+</Steps>
+
+Each layer is independently testable and can be used in isolation. You can, for example, test that a `Path` parser correctly extracts a segment without constructing a full router.

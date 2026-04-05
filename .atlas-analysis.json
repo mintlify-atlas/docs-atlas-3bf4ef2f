@@ -1,0 +1,117 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Swift URL Routing",
+  "projectDescription": "A bidirectional URL router for Swift that provides type-safe parsing and printing of URLs for both client-side deep linking and server-side request routing.",
+  "theme": "luma",
+  "primaryColor": "#fb502d",
+  "lightColor": "#fb9252",
+  "darkColor": "#fc7c7c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/routing-model",
+              "concepts/bidirectional-routing",
+              "concepts/parser-printers"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/ios-deep-linking",
+              "guides/server-side-routing",
+              "guides/vapor-integration",
+              "guides/testing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Routing",
+            "pages": [
+              "api/route",
+              "api/router"
+            ]
+          },
+          {
+            "group": "URL Components",
+            "pages": [
+              "api/path",
+              "api/query",
+              "api/method",
+              "api/headers",
+              "api/body",
+              "api/cookies",
+              "api/form-data",
+              "api/scheme",
+              "api/host",
+              "api/fragment"
+            ]
+          },
+          {
+            "group": "Client & Printing",
+            "pages": [
+              "api/url-routing-client",
+              "api/base-url-printer",
+              "api/url-request-data"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Bidirectional routing — parse URLs into typed values and print them back to URLs",
+    "Type-safe route modeling with Swift enums",
+    "Composable parsers using result builders for path, query, headers, body, and cookies",
+    "URLRoutingClient for making type-safe API requests from iOS/macOS apps",
+    "Deep linking support for iOS applications",
+    "Server-side routing support with Vapor integration",
+    "Built on swift-parsing for composable, invertible parser-printers",
+    "Support for HTTP methods, schemes, hosts, fragments, and form data"
+  ],
+  "publicApiSurface": [
+    "Route",
+    "Router (typealias for ParserPrinter<URLRequestData, Output>)",
+    "Path",
+    "Query",
+    "Field",
+    "Method",
+    "Headers",
+    "Body",
+    "Cookies",
+    "FormData",
+    "Scheme",
+    "Host",
+    "Fragment",
+    "URLRoutingClient",
+    "URLRoutingClient.live(router:session:)",
+    "URLRoutingClient.failing",
+    "URLRoutingClient.override(_:with:)",
+    "URLRequestData",
+    "BaseURLPrinter",
+    "ParserPrinter.baseURL(_:)",
+    "ParserPrinter.baseRequestData(_:)",
+    "ParserPrinter.match(url:)",
+    "ParserPrinter.match(path:)",
+    "ParserPrinter.match(request:)",
+    "ParserPrinter.url(for:)",
+    "ParserPrinter.path(for:)",
+    "ParserPrinter.request(for:)"
+  ]
+}

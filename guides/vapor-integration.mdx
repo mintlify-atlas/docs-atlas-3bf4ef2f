@@ -1,0 +1,150 @@
+---
+title: "Vapor integration"
+description: "Integrate swift-url-routing with Vapor using the vapor-routing companion package."
+---
+
+swift-url-routing integrates with [Vapor](https://vapor.codes) through a separate companion package called **vapor-routing**. This package wraps swift-url-routing and provides Vapor-specific middleware that routes incoming requests through your parser-printer router.
+
+<Note>
+The Vapor integration lives in a separate package: [pointfreeco/vapor-routing](https://github.com/pointfreeco/vapor-routing). You do not need any additional code in swift-url-routing itself — vapor-routing depends on it and adds the Vapor layer on top.
+</Note>
+
+## Adding the dependency
+
+Add vapor-routing to your `Package.swift`. It brings in both Vapor and swift-url-routing as transitive dependencies.
+
+```swift
+// Package.swift
+let package = Package(
+  name: "MyServer",
+  platforms: [
+    .macOS(.v12)
+  ],
+  dependencies: [
+    .package(url: "https://github.com/vapor/vapor", from: "4.0.0"),
+    .package(
+      url: "https://github.com/pointfreeco/vapor-routing",
+      from: "0.1.0"
+    ),
+  ],
+  targets: [
+    .executableTarget(
+      name: "App",
+      dependencies: [
+        .product(name: "Vapor", package: "vapor"),
+        .product(name: "VaporRouting", package: "vapor-routing"),
+      ]
+    ),
+  ]
+)
+```
+
+<Note>
+Import `VaporRouting` (from the vapor-routing package), not `URLRouting` directly, when working with Vapor. `VaporRouting` re-exports `URLRouting` and adds Vapor-specific conformances.
+</Note>
+
+## How the integration works
+
+vapor-routing provides a `mount(_:use:)` method on Vapor's `Application` and `RoutesBuilder`. You pass it your swift-url-routing router and a handler closure. The middleware converts each incoming Vapor `Request` into a `URLRequest`, runs it through your parser-printer router, and dispatches the matched route value to your handler.
+
+The pattern is:
+
+1. Define your route enum and router using swift-url-routing (same as any other use of the library).
+2. Call `app.mount(myRouter, use: siteHandler)` in your Vapor `configure` function.
+3. Implement `siteHandler(_:route:)` to switch on the route enum and return a Vapor `Response`.
+
+## Defining routes
+
+Route definitions are identical to any other swift-url-routing usage:
+
+```swift
+import VaporRouting
+
+enum SiteRoute {
+  case home
+  case books
+  case book(id: Int)
+  case createBook(BookRequest)
+}
+
+let siteRouter = OneOf {
+  Route(.case(SiteRoute.home))
+
+  Route(.case(SiteRoute.books)) {
+    Path { "books" }
+  }
+
+  Route(.case(SiteRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  Route(.case(SiteRoute.createBook)) {
+    Method.post
+    Path { "books" }
+    Body(.json(BookRequest.self))
+  }
+}
+```
+
+## Mounting the router
+
+In your Vapor `configure` function, mount the router using the `mount` method provided by VaporRouting:
+
+```swift
+import Vapor
+import VaporRouting
+
+public func configure(_ app: Application) throws {
+  // Mount your router — VaporRouting handles request conversion
+  app.mount(siteRouter, use: siteHandler)
+}
+
+func siteHandler(
+  request: Request,
+  route: SiteRoute
+) async throws -> any AsyncResponseEncodable {
+  switch route {
+  case .home:
+    return "Welcome to Books!"
+
+  case .books:
+    let books = try await Book.query(on: request.db).all()
+    return books
+
+  case let .book(id: id):
+    guard let book = try await Book.find(id, on: request.db) else {
+      throw Abort(.notFound)
+    }
+    return book
+
+  case let .createBook(bookRequest):
+    let book = Book(title: bookRequest.title, author: bookRequest.author)
+    try await book.save(on: request.db)
+    return book
+  }
+}
+```
+
+## Generating URLs
+
+Because swift-url-routing routers are bidirectional, you can generate URLs for your routes anywhere in your Vapor app. Attach a base URL using `baseURL(_:)` and call `url(for:)` or `path(for:)`:
+
+```swift
+let router = siteRouter.baseURL("https://mybooksapp.com")
+
+// In a Leaf template or JSON response:
+let bookURL = router.url(for: .book(id: 42))
+// URL("https://mybooksapp.com/books/42")
+
+let booksPath = router.path(for: .books)
+// "/books"
+```
+
+<Tip>
+Store the configured router as a Vapor `Application` extension so it is accessible throughout your app without passing it around manually.
+</Tip>
+
+## Further reading
+
+- [vapor-routing on GitHub](https://github.com/pointfreeco/vapor-routing) — source code, README, and full examples
+- [Vapor documentation](https://docs.vapor.codes) — Vapor framework documentation

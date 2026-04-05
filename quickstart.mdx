@@ -1,80 +1,178 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick Start"
+description: "Build your first bidirectional URL router in Swift in a few minutes."
 ---
 
-## Get started in three steps
+This guide walks you through defining routes, building a router, and using it to both parse and generate URLs.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Make sure you've added URLRouting to your project. See [Installation](/installation) for details.
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+## Build your first router
 
-### Step 2: Deploy your changes
+<Steps>
+  <Step title="Import URLRouting">
+    Add the import at the top of your Swift file:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```swift
+    import URLRouting
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    This also re-exports the `swift-parsing` library, so all parser types (`OneOf`, `Digits`, `Int.parser()`, etc.) are available immediately.
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Define your routes as an enum">
+    Model each URL in your app as an enum case. Put only the data you want to extract into the associated values — not the URL structure itself.
 
-### Step 3: Go live
+    ```swift
+    enum AppRoute {
+      case books
+      case book(id: Int)
+      case searchBooks(query: String, count: Int = 10)
+    }
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    This enum represents three endpoints:
+    - `GET /books` — list all books
+    - `GET /books/:id` — show a specific book
+    - `GET /books/search?query=:query&count=:count` — search books
+  </Step>
+
+  <Step title="Build the router">
+    Use `OneOf` to combine individual `Route` parsers, one per enum case. Each `Route` describes where in the URL the data lives.
+
+    ```swift
+    let appRouter = OneOf {
+      // GET /books
+      Route(.case(AppRoute.books)) {
+        Path { "books" }
+      }
+
+      // GET /books/:id
+      Route(.case(AppRoute.book(id:))) {
+        Path { "books"; Digits() }
+      }
+
+      // GET /books/search?query=:query&count=:count
+      Route(.case(AppRoute.searchBooks(query:count:))) {
+        Path { "books"; "search" }
+        Query {
+          Field("query")
+          Field("count", default: 10) { Digits() }
+        }
+      }
+    }
+    ```
+
+    - `Path { "books"; Digits() }` matches the path `/books/42` and extracts `42` as an `Int`.
+    - `Query { Field("query"); Field("count", default: 10) { Digits() } }` reads `?query=...&count=...`.
+    - `.case(AppRoute.book(id:))` is a `Conversion` from swift-parsing that maps the extracted values to the enum case.
+  </Step>
+
+  <Step title="Parse an incoming URL">
+    Use `match(url:)` or `match(path:)` to turn a URL into an `AppRoute` value:
+
+    ```swift
+    func handleDeepLink(url: URL) throws {
+      switch try appRouter.match(url: url) {
+      case .books:
+        // navigate to books screen
+
+      case let .book(id: id):
+        // navigate to book with id
+
+      case let .searchBooks(query: query, count: count):
+        // navigate to search screen with query and count
+      }
+    }
+    ```
+
+    ```swift
+    // Parsing from a path string
+    try appRouter.match(path: "/books/42")
+    // → AppRoute.book(id: 42)
+
+    try appRouter.match(path: "/books/search?query=Blob&count=5")
+    // → AppRoute.searchBooks(query: "Blob", count: 5)
+
+    // Default values are used when query params are absent
+    try appRouter.match(path: "/books/search?query=Blob")
+    // → AppRoute.searchBooks(query: "Blob", count: 10)
+    ```
+  </Step>
+
+  <Step title="Generate URLs from route values">
+    The same router can print route values back into URLs — no separate URL construction logic needed:
+
+    ```swift
+    appRouter.path(for: .books)
+    // → "/books"
+
+    appRouter.path(for: .book(id: 42))
+    // → "/books/42"
+
+    appRouter.path(for: .searchBooks(query: "Blob Bio"))
+    // → "/books/search?query=Blob%20Bio"
+    // (count is omitted because it equals the default value of 10)
+
+    appRouter.path(for: .searchBooks(query: "Blob Bio", count: 5))
+    // → "/books/search?query=Blob%20Bio&count=5"
+    ```
+
+    To generate absolute URLs, prepend a base URL:
+
+    ```swift
+    let apiRouter = appRouter.baseURL("https://api.example.com")
+
+    apiRouter.url(for: .book(id: 42))
+    // → URL("https://api.example.com/books/42")
+    ```
+  </Step>
+
+  <Step title="Use URLRoutingClient for API requests">
+    On iOS and macOS, use `URLRoutingClient` to make type-safe network requests:
+
+    ```swift
+    // Create a live client
+    let apiClient = URLRoutingClient.live(
+      router: appRouter.baseURL("https://api.example.com")
+    )
+
+    // Make a request and decode the JSON response
+    struct Book: Decodable { var id: Int; var title: String }
+
+    let (book, _) = try await apiClient.decodedResponse(
+      for: .book(id: 42),
+      as: Book.self
+    )
+    print(book.title) // "Blob Autobiography"
+    ```
+
+    For testing, use the `failing` client with `override` to mock responses without hitting the network:
+
+    ```swift
+    let testClient = URLRoutingClient<AppRoute>.failing
+      .override(.books) {
+        try .ok([Book(id: 1, title: "Blob Autobiography")])
+      }
+    ```
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core Concepts" icon="book" href="/concepts/routing-model">
+    Understand the routing model, bidirectional routing, and parser-printers in depth.
+  </Card>
+  <Card title="iOS deep linking" icon="mobile" href="/guides/ios-deep-linking">
+    Handle universal links and custom URL schemes in SwiftUI and UIKit.
+  </Card>
+  <Card title="Server-side routing" icon="server" href="/guides/server-side-routing">
+    Route HTTP requests in server-side Swift applications.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/route">
+    Browse the full API — every type, parser, and method.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

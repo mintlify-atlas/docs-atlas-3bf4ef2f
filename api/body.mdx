@@ -1,0 +1,150 @@
+---
+title: 'Body'
+description: 'Parses and prints a request body from raw Data.'
+---
+
+## Overview
+
+`Body` reads `URLRequestData.body` and passes the raw `Data` to a byte-level parser or conversion. Three initialiser forms let you choose how to process the bytes:
+
+1. **Builder form** — compose arbitrary `Data`-input parsers, including `FormData`.
+2. **Conversion form** — apply a `Conversion` such as `.json(T.self)` to the whole body.
+3. **Empty form** — read the entire body as `Data` without further processing.
+
+`Body` conforms to `ParserPrinter` when the underlying byte parser does, enabling round-trip encoding and decoding.
+
+## Declaration
+
+```swift
+public struct Body<Bytes: Parser>: Parser where Bytes.Input == Data
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `Bytes: ParserPrinter` |
+
+## Initializers
+
+### `init(_:)` — conversion form
+
+```swift
+public init<C>(_ bytesConversion: C)
+    where Bytes == Parsers.MapConversion<Parsers.ReplaceError<Rest<Data>>, C>
+```
+
+Parses the request body in its entirety and applies a `Conversion` to the resulting `Data`. The most common use-case is JSON decoding.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `bytesConversion` | A `Conversion` that transforms `Data` into a typed value (e.g. `.json(MyType.self)`). |
+
+```swift
+struct Comment: Codable {
+    var author: String
+    var message: String
+}
+
+Body(.json(Comment.self))
+```
+
+### `init(build:)` — builder form
+
+```swift
+public init(@ParserBuilder<Data> _ bytesParser: () -> Bytes)
+```
+
+Composes a body parser from a `@ParserBuilder<Data>` closure. Use this form when you need to apply parsers such as `FormData` that operate on `Data`.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `bytesParser` | A `@ParserBuilder<Data>` closure that builds the parser applied to the raw body bytes. |
+
+### `init()` — empty form
+
+```swift
+public init() where Bytes == Parsers.ReplaceError<Rest<Bytes.Input>>
+```
+
+Reads the entire request body as `Data`. Returns an empty `Data` if the body is absent.
+
+## Usage examples
+
+### JSON request body
+
+```swift
+struct CreateUserRequest: Codable {
+    var name: String
+    var email: String
+}
+
+Route(.case(AppRoute.createUser)) {
+    Method.post
+    Path { "users" }
+    Body(.json(CreateUserRequest.self))
+}
+```
+
+### Form-encoded body (with FormData)
+
+```swift
+let p = Body {
+    FormData {
+        Field("name", .string)
+        Field("age") { Int.parser() }
+    }
+}
+
+var request = URLRequestData(body: .init("name=Blob&age=42&debug=1".utf8))
+let (name, age) = try p.parse(&request)
+// name == "Blob", age == 42
+// Unconsumed: request.body == "debug=1"
+```
+
+### Reading raw bytes
+
+```swift
+// Read the entire body as Data
+let p = Body()
+
+var request = URLRequestData(body: Data("hello".utf8))
+let data = try p.parse(&request)
+// data == Data("hello".utf8)
+```
+
+### Bidirectional printing
+
+```swift
+struct Post: Codable, Equatable {
+    var title: String
+}
+
+let p = Body(.json(Post.self))
+
+// Print encodes back to JSON Data
+let data = try p.print(Post(title: "Hello"))
+// data.body == JSON representation of Post
+```
+
+### Custom byte parser
+
+```swift
+// Parse the first 4 bytes as a magic number
+let p = Body {
+    Prefix(4)
+}
+```
+
+<Note>
+`Body` throws `RoutingError` if `URLRequestData.body` is `nil`. Use the empty `init()` form if you need to gracefully handle a missing body, as it substitutes an empty `Data`.
+</Note>
+
+<Tip>
+The `.json(T.self)` conversion comes from the swift-parsing library's `Conversions` namespace. It uses `JSONDecoder` / `JSONEncoder` under the hood and works with any `Codable` type.
+</Tip>

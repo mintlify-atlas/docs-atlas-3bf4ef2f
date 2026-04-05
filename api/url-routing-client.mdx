@@ -1,0 +1,253 @@
+---
+title: "URLRoutingClient"
+description: "A type-safe HTTP client that makes requests to typed routes rather than raw URLs."
+---
+
+## Overview
+
+`URLRoutingClient<Route>` wraps a router to give you a fully type-safe way to make network requests. Instead of constructing `URLRequest` values by hand, you call methods with your app's route enum and the client handles URL generation, network I/O, and response decoding.
+
+The typical pattern is:
+
+1. Define your route type (an enum describing every endpoint).
+2. Build a router (a `ParserPrinter` that converts routes to `URLRequestData`).
+3. Create a `.live` client from the router for production, and a `.failing` client with overrides for tests.
+
+## Declaration
+
+```swift
+public struct URLRoutingClient<Route>
+```
+
+## Properties
+
+| Name | Type | Description |
+|------|------|-------------|
+| `request` | `(Route) async throws -> (Data, URLResponse)` | The underlying request function invoked for every call to `data(for:)`. |
+| `decoder` | `JSONDecoder` | The decoder used by `decodedResponse(for:as:decoder:)` when no per-call decoder is provided. |
+
+## Initializers
+
+### `init(request:decoder:)`
+
+Creates a client from a custom request closure and an optional decoder.
+
+```swift
+public init(
+  request: @escaping (Route) async throws -> (Data, URLResponse),
+  decoder: JSONDecoder = .init()
+)
+```
+
+**Parameters**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `request` | `(Route) async throws -> (Data, URLResponse)` | Called for every route request. |
+| `decoder` | `JSONDecoder` | Default decoder for response decoding. Defaults to a fresh `JSONDecoder`. |
+
+## Static factory methods
+
+### `live(router:session:decoder:)`
+
+Creates a live client that converts routes to `URLRequest` values using `router` and executes them with `session`.
+
+<Info>
+Available on macOS 10.15+, iOS 13+, tvOS 13+, and watchOS 6+.
+</Info>
+
+```swift
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+public static func live<R: ParserPrinter>(
+  router: R,
+  session: URLSession = .shared,
+  decoder: JSONDecoder = .init()
+) -> URLRoutingClient<Route>
+where R.Input == URLRequestData, R.Output == Route
+```
+
+**Parameters**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `router` | `R` | A `ParserPrinter` that converts routes to `URLRequestData`. |
+| `session` | `URLSession` | The session used to execute requests. Defaults to `.shared`. |
+| `decoder` | `JSONDecoder` | Default decoder for response decoding. Defaults to a fresh `JSONDecoder`. |
+
+### `failing`
+
+Creates a client that calls `reportIssue` and throws `UnimplementedEndpoint` for every request. Use this as a base in tests, then add `override` calls for the routes your test exercises.
+
+```swift
+public static var failing: URLRoutingClient<Route> { get }
+```
+
+## Instance methods
+
+### `data(for:)`
+
+Makes a request to a route and returns the raw data and response.
+
+```swift
+@available(iOS 13, macOS 10.15, tvOS 13, watchOS 6, *)
+public func data(for route: Route) async throws -> (value: Data, response: URLResponse)
+```
+
+### `decodedResponse(for:as:decoder:)`
+
+Makes a request to a route and decodes the response body as a `Decodable` type. Throws `URLRoutingDecodingError` if decoding fails, giving you access to the raw bytes for diagnostics.
+
+```swift
+@available(iOS 13, macOS 10.15, tvOS 13, watchOS 6, *)
+public func decodedResponse<Value: Decodable>(
+  for route: Route,
+  as type: Value.Type = Value.self,
+  decoder: JSONDecoder? = nil
+) async throws -> (value: Value, response: URLResponse)
+```
+
+**Parameters**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `route` | `Route` | The route to request. |
+| `type` | `Value.Type` | The type to decode the response body into. Can be inferred from context. |
+| `decoder` | `JSONDecoder?` | A per-call decoder. Falls back to the client's `decoder` property when `nil`. |
+
+### `override(_:with:)` — Equatable route
+
+Returns a new client that intercepts requests matching `route` (by equality) and returns the provided `response` closure instead. All other routes pass through to the receiver.
+
+```swift
+public func override(
+  _ route: Route,
+  with response: @escaping () throws -> Result<(data: Data, response: URLResponse), URLError>
+) -> URLRoutingClient<Route>
+where Route: Equatable
+```
+
+### `override(_:with:)` — extract closure
+
+Returns a new client that intercepts routes for which `extract` returns a non-`nil` value.
+
+```swift
+public func override<Value>(
+  _ extract: @escaping (Route) -> Value?,
+  with response: @escaping (Value) throws -> Result<(data: Data, response: URLResponse), URLError>
+) -> URLRoutingClient<Route>
+```
+
+### `override(_:with:)` — predicate closure
+
+Returns a new client that intercepts routes for which `predicate` returns `true`.
+
+```swift
+public func override(
+  _ predicate: @escaping (Route) -> Bool,
+  with response: @escaping () throws -> Result<(data: Data, response: URLResponse), URLError>
+) -> URLRoutingClient<Route>
+```
+
+## Related types
+
+### `URLRoutingDecodingError`
+
+Thrown by `decodedResponse(for:as:decoder:)` when JSON decoding fails. Carries the raw response bytes and the `URLResponse` so you can inspect what the server actually returned.
+
+```swift
+public struct URLRoutingDecodingError: Error {
+  public let bytes: Data
+  public let response: URLResponse
+  public let underlyingError: Error
+}
+```
+
+### `Result.ok(_:headerFields:encoder:)`
+
+A convenience factory on `Result<(data: Data, response: URLResponse), URLError>` that encodes a value into JSON and wraps it in a synthetic HTTP 200 response. Designed for use with `override`.
+
+```swift
+public static func ok<T: Encodable>(
+  _ value: T,
+  headerFields: [String: String]? = nil,
+  encoder: JSONEncoder = .init()
+) throws -> Result<(data: Data, response: URLResponse), URLError>
+```
+
+## Examples
+
+### Creating a live client
+
+Define your router once and create the live client from it.
+
+```swift
+import URLRouting
+
+enum SiteRoute {
+  case home
+  case episodes
+  case episode(id: Int)
+}
+
+let router = OneOf {
+  Route(.case(SiteRoute.home))
+  Route(.case(SiteRoute.episodes)) {
+    Path { "episodes" }
+  }
+  Route(.case(SiteRoute.episode(id:))) {
+    Path { "episodes"; Int.parser() }
+  }
+}
+
+let apiClient = URLRoutingClient<SiteRoute>.live(
+  router: router.baseURL("https://api.example.com/v1"),
+  session: .shared
+)
+```
+
+### Making a request and decoding the response
+
+```swift
+struct Episode: Decodable {
+  let id: Int
+  let title: String
+}
+
+let (episode, response) = try await apiClient.decodedResponse(
+  for: .episode(id: 42),
+  as: Episode.self
+)
+print(episode.title)
+```
+
+### Setting up a test client with `failing` + `override`
+
+Start with `.failing` so any unhandled route surfaces as a test failure, then override exactly the routes your feature uses.
+
+```swift
+struct SearchResponse: Codable, Equatable {
+  let results: [String]
+}
+
+let testClient = URLRoutingClient<SiteRoute>.failing
+  .override(.episodes, with: {
+    try .ok(SearchResponse(results: ["Episode 1", "Episode 2"]))
+  })
+
+// Any call to .home or .episode(id:) will fail the test.
+// .episodes returns the mock SearchResponse.
+```
+
+### Using `Result.ok` directly
+
+```swift
+let mockResult: Result<(data: Data, response: URLResponse), URLError> =
+  try .ok(SearchResponse(results: ["Episode 1"]))
+
+let testClient = URLRoutingClient<SiteRoute>.failing
+  .override(.episodes, with: { mockResult })
+```
+
+<Note>
+`Result.ok` encodes the value using `JSONEncoder`, so the type must conform to `Encodable`.
+</Note>

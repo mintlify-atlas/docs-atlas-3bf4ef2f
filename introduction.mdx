@@ -1,0 +1,167 @@
+---
+title: "Introduction"
+description: "A bidirectional URL router for Swift with type safety and no fuss, built on top of swift-parsing."
+---
+
+Swift URL Routing is an open-source library from [Point-Free](http://pointfree.co) that brings type-safe, bidirectional URL routing to both iOS client apps and Swift server applications. It is built on top of [swift-parsing](https://github.com/pointfreeco/swift-parsing), a library of composable, invertible parsers.
+
+## The problem
+
+URL routing is a ubiquitous challenge in both client-side and server-side Swift applications:
+
+- **iOS deep linking** — you receive a `URL` and need to determine which screen to navigate to, and which data to extract from it.
+- **Server-side routing** — you receive an HTTP request and need to dispatch it to the correct handler, and also _generate_ valid URLs to embed in responses.
+
+Most solutions handle only one direction. A typical deep-link handler is a one-way function that parses a URL into a destination — it cannot go the other way and produce a URL from a destination. This means URLs are often duplicated, hardcoded, and easy to get out of sync.
+
+Swift URL Routing solves this by modeling your routes as a typed enum and defining a single router that can:
+
+- **Parse** an incoming URL into a typed route value.
+- **Print** a typed route value back into a URL.
+
+The router is the single source of truth for your URL structure.
+
+## A taste of the API
+
+You begin with a domain model — an enum whose cases represent every URL your app handles:
+
+```swift
+enum AppRoute {
+  case books
+  case book(id: Int)
+  case searchBooks(query: String, count: Int = 10)
+}
+```
+
+Then you describe how each case maps to a URL using composable building blocks:
+
+```swift
+import URLRouting
+
+let appRouter = OneOf {
+  // GET /books
+  Route(.case(AppRoute.books)) {
+    Path { "books" }
+  }
+
+  // GET /books/:id
+  Route(.case(AppRoute.book(id:))) {
+    Path { "books"; Digits() }
+  }
+
+  // GET /books/search?query=:query&count=:count
+  Route(.case(AppRoute.searchBooks(query:count:))) {
+    Path { "books"; "search" }
+    Query {
+      Field("query")
+      Field("count", default: 10) { Digits() }
+    }
+  }
+}
+```
+
+Parse an incoming URL in one call:
+
+```swift
+func handleDeepLink(url: URL) throws {
+  switch try appRouter.match(url: url) {
+  case .books:
+    // navigate to books screen
+
+  case let .book(id: id):
+    // navigate to book with id
+
+  case let .searchBooks(query: query, count: count):
+    // navigate to search screen with query and count
+  }
+}
+```
+
+And generate URLs from your route values — no string interpolation required:
+
+```swift
+appRouter.path(for: .searchBooks(query: "Blob Bio"))
+// "/books/search?query=Blob%20Bio"
+
+appRouter.path(for: .book(id: 42))
+// "/books/42"
+```
+
+<Note>
+  Because the router is bidirectional, a URL you generate is guaranteed to round-trip back to the
+  same route when parsed. You can verify this in tests.
+</Note>
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Bidirectional routing" icon="arrows-left-right">
+    Parse URLs into typed route values _and_ print route values back into URLs, from the same
+    router definition.
+  </Card>
+  <Card title="Full type safety" icon="shield-check">
+    Route data is extracted directly into Swift enum cases with associated values. No stringly-typed
+    dictionaries or `Any` casting.
+  </Card>
+  <Card title="Composable building blocks" icon="puzzle-piece">
+    Combine `Path`, `Query`, `Body`, `Headers`, `Method`, `Cookies`, `Fragment`, and more to
+    describe any URL structure.
+  </Card>
+  <Card title="iOS deep linking" icon="mobile">
+    Handle `URL` callbacks from `onOpenURL`, Universal Links, or custom schemes with a single
+    `match(url:)` call.
+  </Card>
+  <Card title="Server-side routing" icon="server">
+    Use the same router to dispatch incoming HTTP requests on the server and generate links in
+    HTML responses.
+  </Card>
+  <Card title="Testable API client" icon="flask">
+    `URLRoutingClient` wraps your router and `URLSession` into an async-friendly client you can
+    override in tests with mock responses.
+  </Card>
+</CardGroup>
+
+## When to use it
+
+| Use case | Fits? |
+|---|---|
+| iOS deep linking via custom URL scheme or Universal Links | Yes |
+| iOS navigation driven by URL state | Yes |
+| Server-side routing in a Vapor application | Yes (via [vapor-routing](https://github.com/pointfreeco/vapor-routing)) |
+| Generating URLs for a website or API | Yes |
+| Simple one-off URL parsing with no round-trip requirement | Possible overkill |
+
+## Related projects
+
+<CardGroup cols={2}>
+  <Card
+    title="swift-parsing"
+    icon="code"
+    href="https://github.com/pointfreeco/swift-parsing"
+  >
+    The foundation this library is built on. Composable, bidirectional parsers for any Swift type.
+    `URLRouting` re-exports `Parsing` automatically, so you get access to `Digits`, `OneOf`,
+    `Parse`, and all other primitives.
+  </Card>
+  <Card
+    title="vapor-routing"
+    icon="cloud"
+    href="https://github.com/pointfreeco/vapor-routing"
+  >
+    Bindings that integrate Swift URL Routing with the Vapor web framework. Mount your router
+    directly on a Vapor `Application` and handle routes with full type safety.
+  </Card>
+</CardGroup>
+
+## Learn more
+
+This library was introduced in an episode of [Point-Free](http://pointfree.co), a video series on functional programming and the Swift language hosted by [Brandon Williams](https://twitter.com/mbrandonw) and [Stephen Celis](https://twitter.com/stephencelis).
+
+<Card
+  title="Tour of parser-printers: URL routing"
+  icon="play"
+  href="http://pointfree.co/episodes/ep187-tour-of-parser-printers-url-routing"
+>
+  Episode #187 — watch how the library was designed from the ground up, and see bidirectional
+  routing in action.
+</Card>

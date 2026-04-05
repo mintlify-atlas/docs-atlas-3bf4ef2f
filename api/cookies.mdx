@@ -1,0 +1,133 @@
+---
+title: 'Cookies'
+description: 'Parses and prints HTTP cookies from the Cookie request header.'
+---
+
+## Overview
+
+`Cookies` reads the `Cookie` request header, splits it into individual `name=value` pairs (separated by `"; "`), and passes the resulting key-value collection to your `Field` parsers.
+
+When printing, it reassembles all the field values into a single `Cookie` header string and writes it back into the request headers.
+
+## Declaration
+
+```swift
+public struct Cookies<Parsers: Parser>: Parser
+    where Parsers.Input == URLRequestData.Fields
+```
+
+## Conformances
+
+| Protocol | Condition |
+|---|---|
+| `Parser` | Always |
+| `ParserPrinter` | When `Parsers: ParserPrinter` |
+
+## Initializers
+
+### `init(build:)`
+
+```swift
+public init(@ParserBuilder<URLRequestData.Fields> build: () -> Parsers)
+```
+
+Builds a cookies parser from a `@ParserBuilder<URLRequestData.Fields>` closure that lists the `Field` parsers for individual cookie values.
+
+**Parameters**
+
+| Name | Description |
+|---|---|
+| `build` | A `@ParserBuilder` closure that lists `Field` parsers for each cookie name you want to extract. |
+
+## Parsing behaviour
+
+`Cookies` performs the following steps during parsing:
+
+1. Reads the `cookie` header from `URLRequestData.headers` (throws `RoutingError` if absent).
+2. Splits each header value on `"; "` to obtain individual `name=value` tokens.
+3. Builds a case-sensitive `URLRequestData.Fields` dictionary from those tokens.
+4. Runs your `Field` parsers against that dictionary.
+
+Cookie names are treated as **case-sensitive**.
+
+## Printing behaviour
+
+When printing:
+
+1. Runs your `Field` parsers' `print` methods to build a `URLRequestData.Fields` dictionary.
+2. Encodes each entry as `name=value`.
+3. Joins all pairs with `"; "` and prepends the result to `input.headers["cookie"]`.
+
+## Usage examples
+
+### Parsing session cookies
+
+```swift
+struct Session: Equatable {
+    var userId: Int
+    var isAdmin: Bool
+}
+
+let p = Cookies {
+    Field("userId") { Int.parser() }
+    Field("isAdmin") { Bool.parser() }
+}
+.map(.memberwise(Session.init(userId:isAdmin:)))
+
+var request = URLRequestData(headers: ["cookie": ["userId=42; isAdmin=true"]])
+let session = try p.parse(&request)
+// session == Session(userId: 42, isAdmin: true)
+```
+
+### Printing cookies
+
+```swift
+let data = try p.print(Session(userId: 42, isAdmin: true))
+// data.headers["cookie"] == ["userId=42; isAdmin=true"]
+```
+
+### JSON-encoded cookie value
+
+```swift
+struct Session: Codable, Equatable {
+    var userId: Int
+}
+
+let p = Cookies {
+    Field("pf_session", .utf8.data.json(Session.self))
+}
+
+var request = URLRequestData(headers: ["cookie": [#"pf_session={"userId":42}; foo=bar"#]])
+let session = try p.parse(&request)
+// session == Session(userId: 42)
+```
+
+### Optional cookie with a default
+
+```swift
+let p = Cookies {
+    Field("theme", .string, default: "light")
+}
+
+// Works even without a Cookie header value for "theme"
+```
+
+### Inside a Route
+
+```swift
+Route(.case(AppRoute.dashboard)) {
+    Method.get
+    Path { "dashboard" }
+    Cookies {
+        Field("session_id", .string)
+    }
+}
+```
+
+<Note>
+`Cookies` requires the `cookie` header to be present. If the header is missing, parsing throws `RoutingError`. Use a `Field` with a `default:` value for optional cookies.
+</Note>
+
+<Tip>
+Cookie names are case-sensitive inside `Cookies`, unlike header names which are lowercased by `URLRequestData`. Make sure your `Field` names match the cookie names exactly as sent by the client.
+</Tip>
